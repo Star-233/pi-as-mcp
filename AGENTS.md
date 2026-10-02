@@ -79,6 +79,13 @@ node src/index.ts --root <dir> --http --port 8777 --token <tok> # for a remote c
 - **The listening ports must be free.** A taken port is a hard exit with a clear message,
   not a silent retry. Port 8765 is occupied by AgentDock on this machine, which is why the
   default moved to 8777. `npm run accept` asks the OS for free ports instead of guessing.
+- **A quick-tunnel URL is printed before the edge connection exists.** Poll it until it
+  answers before pasting it into a client; connecting too early fails with `fetch failed`.
+  An HTTP 401 from `/mcp` is the ready signal.
+- **This machine already runs a `cloudflared` service** (automatic start, dashboard-managed
+  tunnel, token in `C:\ProgramData\cloudflared\token`). A public hostname pointed at
+  `127.0.0.1:8777` in the Zero Trust dashboard is stable across restarts — prefer it over a
+  quick tunnel, whose hostname changes every time.
 - **Security.** This bridge hands a remote model a shell on the host. `--root` confines path
   arguments only. Run it in a container with one mounted work directory, always set `--token`
   when using `--http`, and prefer `--approve bash`.

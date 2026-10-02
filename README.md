@@ -159,6 +159,9 @@ escape is refused and that an unapproved shell command never runs.
 - **Stateless HTTP.** A fresh `Server` + transport is created per request. Reusing one
   transport makes every request after `initialize` fail with HTTP 500.
 - **`bash` on Windows** needs a real bash on `PATH`; use `powershell` otherwise.
+- **A quick-tunnel URL appears before the tunnel can carry traffic.** Poll it until it answers
+  — an HTTP 401 from `/mcp` means the tunnel reaches the server and only the token is missing —
+  before pasting it into the client. Connecting too early fails with `fetch failed`.
 - **Port 8765 is taken by AgentDock on this machine**, which is why the HTTP default is 8777.
 
 ## History
