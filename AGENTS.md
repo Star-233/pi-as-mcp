@@ -1,7 +1,7 @@
 # AGENTS.md
 
 Index for agents working in this repository. The full manual lives in
-[pi-mcp/README.md](pi-mcp/README.md) — read that before making non-trivial changes.
+[README.md](README.md) — read that before making non-trivial changes.
 
 ## What this is
 
@@ -22,19 +22,19 @@ full, including the edits that were uncommitted at the time, at tag `humanchat-f
 
 | Path | What |
 |---|---|
-| `pi-mcp/src/index.ts` | Entry point. Config, human UI, stdio or HTTP transport. |
-| `pi-mcp/src/pi-tools.ts` | Imports Pi's tool definitions and adapts them to MCP. |
-| `pi-mcp/src/prompt.ts` | Reproduces Pi's system-prompt algorithm, plus the `<human>` section. |
-| `pi-mcp/src/server.ts` | MCP server: tool list, human tools, approval gate. |
-| `pi-mcp/src/sandbox.ts` | Path containment + deny list. |
-| `pi-mcp/src/human/channel.ts` | In-memory single-human channel (the whole "session" story). |
-| `pi-mcp/src/human/webui.ts`, `ui.html` | Local human UI (SSE + POST). |
-| `pi-mcp/scripts/*.mjs` | Probes that drive the real server over real MCP traffic. |
+| `src/index.ts` | Entry point. Config, human UI, stdio or HTTP transport. |
+| `src/pi-tools.ts` | Imports Pi's tool definitions and adapts them to MCP. |
+| `src/prompt.ts` | Reproduces Pi's system-prompt algorithm, plus the `<human>` section. |
+| `src/server.ts` | MCP server: tool list, human tools, approval gate. |
+| `src/sandbox.ts` | Path containment + deny list. |
+| `src/human/channel.ts` | In-memory single-human channel (the whole "session" story). |
+| `src/human/webui.ts`, `ui.html` | Local human UI (SSE + POST). |
+| `scripts/*.mjs` | Probes that drive the real server over real MCP traffic. |
 
 ## Commands
 
-Run everything from `pi-mcp/`. Node 22.6+ (sources are TypeScript, executed directly via
-Node's type stripping — there is no build step).
+Run everything from the repository root. Node 22.6+ (sources are TypeScript, executed
+directly via Node's type stripping — there is no build step).
 
 ```bash
 npm install
@@ -87,5 +87,6 @@ node src/index.ts --root <dir> --http --port 8777 --token <tok> # for a remote c
 
 - The LICENSE is still Apache-2.0 naming "HumanChat MCP contributors", from the removed project.
   It has not been changed deliberately.
-- `pi-mcp/` has not been promoted to the repository root; the README at the root is an
-  orientation page pointing at `pi-mcp/README.md`.
+- The project was promoted from the former `pi-mcp/` subdirectory to the repository root.
+  Commits before that move and the `humanchat-final` tag name paths that no longer exist in
+  the working tree; use `git log --follow` and `git show humanchat-final --stat`.
