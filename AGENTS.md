@@ -30,6 +30,8 @@ full, including the edits that were uncommitted at the time, at tag `humanchat-f
 | `src/human/channel.ts` | In-memory single-human channel (the whole "session" story). |
 | `src/human/webui.ts`, `ui.html` | Local human UI (SSE + POST). |
 | `scripts/*.mjs` | Probes that drive the real server over real MCP traffic. |
+| `bin/pimcp.mjs` | The `pimcp` launcher: ports, token, tunnel, ready check, browser. |
+| `bin/supervise.mjs` | Parent-death watchdog so children cannot outlive the launcher. |
 
 ## Commands
 
@@ -42,6 +44,8 @@ npm test          # config defaults + stdio probe + HTTP/auth/approval probe
 npm run typecheck # tsc --noEmit
 npm run prompt    # print the ported system prompt
 npm run accept    # human acceptance: drives the real server, you reply in the browser
+npm link          # once: puts `pimcp` on PATH (run from anywhere afterwards)
+pimcp             # server + token + tunnel for the current directory
 
 node src/index.ts --root <dir>                                  # stdio + human UI on :8790
 node src/index.ts --root <dir> --http --port 8777 --token <tok> # for a remote client
@@ -79,9 +83,14 @@ node src/index.ts --root <dir> --http --port 8777 --token <tok> # for a remote c
 - **The listening ports must be free.** A taken port is a hard exit with a clear message,
   not a silent retry. Port 8765 is occupied by AgentDock on this machine, which is why the
   default moved to 8777. `npm run accept` asks the OS for free ports instead of guessing.
-- **A quick-tunnel URL is printed before the edge connection exists.** Poll it until it
-  answers before pasting it into a client; connecting too early fails with `fetch failed`.
-  An HTTP 401 from `/mcp` is the ready signal.
+- **A quick-tunnel URL is printed before the edge connection exists, and you cannot trust an
+  HTTP probe to tell you when it is ready.** On this machine a fake-IP TUN proxy makes the host
+  unable to reach its own public URL at all (`ECONNRESET` / HTTP 000 for both curl and Node)
+  while the tunnel is healthy for remote clients. `Registered tunnel connection` in
+  cloudflared's log is the real signal; `pimcp` waits for that.
+- **Never spawn the server or cloudflared directly from the launcher.** They go through
+  `bin/supervise.mjs`, which reaps them when the launcher dies. Verified: without it a hard
+  kill of the launcher orphans the server *and* leaves an open public tunnel behind.
 - **This machine already runs a `cloudflared` service** (automatic start, dashboard-managed
   tunnel, token in `C:\ProgramData\cloudflared\token`). A public hostname pointed at
   `127.0.0.1:8777` in the Zero Trust dashboard is stable across restarts — prefer it over a

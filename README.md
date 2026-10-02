@@ -48,7 +48,20 @@ agent. This process is a tool surface plus a message queue with exactly one huma
 
 ```bash
 npm install
+npm link                # puts the `pimcp` command on your PATH — once
 
+cd /path/to/workdir     # the directory the agent should own
+pimcp                   # server + token + public tunnel, prints a paste-ready URL
+```
+
+`pimcp` roots the server at the **current directory**, picks free ports, mints a bearer
+token, opens a Cloudflare quick tunnel, waits for cloudflared to register with the edge,
+opens the human UI, and prints the MCP URL and token. Ctrl-C stops everything.
+`pimcp --no-tunnel` keeps it on localhost; `pimcp --help` lists the rest.
+
+Without the wrapper:
+
+```bash
 # local client (stdio). Human UI comes up on 127.0.0.1:8790 — open it.
 node src/index.ts --root /path/to/workdir
 
@@ -159,9 +172,11 @@ escape is refused and that an unapproved shell command never runs.
 - **Stateless HTTP.** A fresh `Server` + transport is created per request. Reusing one
   transport makes every request after `initialize` fail with HTTP 500.
 - **`bash` on Windows** needs a real bash on `PATH`; use `powershell` otherwise.
-- **A quick-tunnel URL appears before the tunnel can carry traffic.** Poll it until it answers
-  — an HTTP 401 from `/mcp` means the tunnel reaches the server and only the token is missing —
-  before pasting it into the client. Connecting too early fails with `fetch failed`.
+- **Do not judge a tunnel by knocking on its URL.** A local VPN or proxy (fake-IP TUN) can
+  leave your own machine unable to reach its own public URL — `ECONNRESET`, or HTTP 000 from
+  curl — while the tunnel is perfectly healthy for remote clients. The reliable signal is
+  cloudflared logging `Registered tunnel connection`; `pimcp` waits for exactly that and then
+  reports the local probe as advisory only.
 - **Port 8765 is taken by AgentDock on this machine**, which is why the HTTP default is 8777.
 
 ## History

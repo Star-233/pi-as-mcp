@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "bin": { "pimcp": "bin/pimcp.mjs" },
   "description": "One-shot MCP bridge: Pi's coding tools + a local human channel, served to a remote agent.",
   "engines": { "node": ">=22.6" },
   "scripts": {
@@ -11,7 +12,8 @@
     "typecheck": "tsc --noEmit",
     "test": "node scripts/config-test.mjs && node scripts/probe.mjs && node scripts/http-probe.mjs",
     "prompt": "node scripts/show-prompt.mjs",
-    "accept": "node scripts/acceptance.mjs"
+    "accept": "node scripts/acceptance.mjs",
+    "link": "npm link"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.0.0",
