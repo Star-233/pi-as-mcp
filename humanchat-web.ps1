@@ -1,10 +1,10 @@
 ﻿<#
   humanchat-web.ps1 — 前台启动 HumanChat Web 界面（Ctrl+C 停止，不留后台进程）
 
-  用法：  .\humanchat-web.ps1                          # 默认会话 human-in-the-loop
+  用法：  .\humanchat-web.ps1                          # 默认会话 human-in-the-loop（默认开启局域网访问）
           .\humanchat-web.ps1 -Session deploy
           .\humanchat-web.ps1 -Port 9000
-          .\humanchat-web.ps1 -Bind 0.0.0.0            # 手机/局域网（自动生成令牌）
+          .\humanchat-web.ps1 -Bind 127.0.0.1          # 仅限本机访问（不启用令牌）
 
   行为：broker 作为子进程跟本窗口同生共死；Web 服务前台运行；Ctrl+C 全部停掉。
         已经跑着 broker 时只复用、退出时不动它。
@@ -13,11 +13,23 @@
 param(
   [string]$Session = 'human-in-the-loop',
   [int]$Port = 8792,
-  [string]$Bind = '127.0.0.1',
+  [string]$Bind = '0.0.0.0',
   [switch]$NoOpen,
   [switch]$Keep,        # 保留上次的历史（默认是每次全新）
   [string[]]$Extra = @()
 )
+# --- 自动升到 PowerShell 7 ---------------------------------------------------
+# Windows PowerShell 5.1 会把「UTF-8 无 BOM」的文件按 ANSI(GBK) 解码，中文全乱。
+# 这里检测到 5.1 就把自己交给 pwsh 7 重新执行（参数原样转发）。
+if ($PSVersionTable.PSVersion.Major -lt 7) {
+  $pwshExe = (Get-Command pwsh -ErrorAction SilentlyContinue).Source
+  if ($pwshExe) {
+    Write-Host '  [兼容] 当前是 Windows PowerShell，自动改用 PowerShell 7 重新运行 ...' -ForegroundColor DarkGray
+    & $pwshExe -NoProfile -File $PSCommandPath @PSBoundParameters
+    exit $LASTEXITCODE
+  }
+}
+# ----------------------------------------------------------------------------
 
 $ErrorActionPreference = "Stop"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -58,7 +70,8 @@ if (@(Get-BrokerProc).Count -gt 0) {
   }
 }
 
-Write-Host "web 界面  : http://${Bind}:$Port/" -ForegroundColor Cyan
+$shownUrl = if ($Bind -in @("0.0.0.0", "::")) { "http://127.0.0.1:$Port/ （已开启局域网 0.0.0.0 监听，带 token 链接见下方）" } else { "http://${Bind}:$Port/" }
+Write-Host "web 界面  : $shownUrl" -ForegroundColor Cyan
 $freshNote = if ($Keep) { "（保留历史）" } else { "（全新会话：历史已清空）" }
 Write-Host "会话      : $Session   （Ctrl+C 停止全部）$freshNote" -ForegroundColor Cyan
 Write-Host ""

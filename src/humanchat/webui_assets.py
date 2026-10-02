@@ -41,7 +41,7 @@ body{
   background:var(--bg); color:var(--fg); font:14px/1.62 var(--font);
   -webkit-font-smoothing:antialiased; overflow:hidden;
 }
-button,input,textarea{font:inherit;color:inherit}
+button,input,textarea{font:inherit;color:inherit;touch-action:manipulation;-webkit-tap-highlight-color:transparent}
 a{color:var(--accent)}
 .hidden{display:none !important}
 .only-mobile{display:none}
@@ -100,6 +100,12 @@ a{color:var(--accent)}
   animation:pl 1.4s ease-in-out infinite
 }
 @keyframes pl{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.72)}}
+.side-tools{display:none;border-top:1px solid var(--line);padding:8px 10px;gap:6px;flex-wrap:wrap}
+.side-tools .chip-btn{
+  flex:1 1 calc(33.33% - 6px);border:1px solid var(--line-2);background:var(--bg-3);border-radius:9px;
+  padding:6px 8px;font-size:12px;color:var(--fg-2);cursor:pointer;text-align:center;white-space:nowrap
+}
+.side-tools .chip-btn:hover,.side-tools .chip-btn:active{background:var(--bg-4);color:var(--fg)}
 .side-foot{border-top:1px solid var(--line);padding:9px 14px;font-size:12px;color:var(--fg-3);display:grid;gap:3px}
 .kv{display:flex;justify-content:space-between;gap:8px}
 .kv b{color:var(--fg-2);font-weight:600}
@@ -254,31 +260,50 @@ mark.hit{background:rgba(255,214,102,.45);color:inherit;border-radius:3px}
 .empty{color:var(--fg-3);text-align:center;padding:60px 20px;font-size:13.5px}
 .empty b{display:block;color:var(--fg-2);font-size:15px;margin-bottom:6px}
 
-/* ---------------------------------------------------------------- 窄屏 */
+/* ---------------------------------------------------------------- 触屏与窄屏 */
+@media (hover:none),(pointer:coarse){
+  .msg-actions{opacity:.92;gap:10px;padding-top:2px}
+  .msg-actions button{padding:3px 6px;font-size:12px}
+}
 @media (max-width:880px){
   #app{grid-template-columns:1fr}
-  .topbar{gap:8px;padding:10px 12px;min-height:54px}
+  input,textarea,.side-search input,.msg-search input,#input,.modal-card input,.modal-card textarea{font-size:16px}
+  .topbar{
+    gap:8px;min-height:54px;
+    padding:max(10px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) 10px max(12px,env(safe-area-inset-left))
+  }
   .subtitle{display:none}
   .top-actions .icon-btn.opt{display:none}
-  .title{font-size:14px}
+  .title{font-size:14px;cursor:pointer}
   .sidebar{
     position:fixed;top:0;bottom:0;left:0;width:88vw;max-width:330px;
+    padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom);
     transform:translateX(-103%);transition:transform .22s ease;box-shadow:var(--shadow)
   }
   .sidebar.open{transform:none}
+  .side-tools{display:flex}
   .scrim.show{display:block}
   .only-mobile{display:inline-grid}
-  .messages{padding:14px 12px 4px}
+  .messages{padding:14px max(12px,env(safe-area-inset-right)) 6px max(12px,env(safe-area-inset-left));-webkit-overflow-scrolling:touch}
   .msg{max-width:100%}
-  .state-pill{font-size:11.5px;padding:5px 10px}
+  .msg-actions{opacity:.92;gap:10px}
+  .msg-actions button{padding:3px 6px;font-size:12px}
+  .state-pill{font-size:11.5px;padding:5px 10px;max-width:46vw;overflow:hidden;text-overflow:ellipsis}
   .jump{bottom:112px;right:14px}
+  .cmd-menu{left:10px;right:10px;min-width:0;max-height:42vh;overflow-y:auto}
+  .cmd-menu .item{padding:9px 10px}
+  .modal{align-items:flex-start;padding-top:max(10vh,20px)}
 }
 @media (max-width:560px){
-  .state-pill{padding:4px 9px;font-size:11px}
+  .state-pill{padding:4px 9px;font-size:11px;max-width:42vw}
   .top-actions{gap:4px}
-  .icon-btn{min-width:30px;height:30px;padding:0 7px}
-  .composer{padding:10px 10px calc(10px + env(safe-area-inset-bottom))}
+  .icon-btn{min-width:32px;height:32px;padding:0 8px}
+  .composer{
+    padding:10px max(10px,env(safe-area-inset-right)) calc(10px + env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left));
+    gap:8px
+  }
   .composer-side .hint{display:none}
+  .send-btn{padding:11px 16px;min-height:44px}
   .msg .body{padding:10px 12px}
 }
 """
@@ -818,12 +843,19 @@ PAGE_JS = r"""
   }
 
   // ---------------------------------------------------------------- 发送
+  function isMobileTouch() {
+    try { return !!(window.matchMedia && window.matchMedia("(pointer: coarse)").matches); }
+    catch (e) { return false; }
+  }
   function send(text) {
     text = String(text || "").trim();
     if (!text) { return; }
     var input = $("#input");
     input.value = "";
     input.style.height = "auto";
+    $("#cmdMenu").classList.add("hidden");
+    S.history.push(text);
+    S.histIdx = -1;
     updateSendState();
     if (text.charAt(0) === "/") { runCommand(text); return; }
     api("/api/send", {
@@ -877,7 +909,10 @@ PAGE_JS = r"""
     var hits = COMMANDS.filter(function (c) { return c.cmd.toLowerCase().indexOf(q) === 0; });
     if (!hits.length) { menu.classList.add("hidden"); return; }
     menu.innerHTML = hits.map(function (c) {
-      return '<div class="item"><code>' + esc(c.cmd) + "</code><span>" + esc(c.desc) + "</span></div>";
+      var token = c.cmd.split(" ")[0];
+      var needsArg = c.cmd.indexOf("<") >= 0;
+      return '<div class="item" data-cmd="' + esc(token) + '" data-arg="' + (needsArg ? "1" : "0") +
+        '"><code>' + esc(c.cmd) + "</code><span>" + esc(c.desc) + "</span></div>";
     }).join("");
     menu.classList.remove("hidden");
   }
@@ -1092,9 +1127,19 @@ PAGE_JS = r"""
   }
   function bind() {
     var input = $("#input");
+    if (isMobileTouch()) {
+      input.placeholder = "\u8bf4\u70b9\u4ec0\u4e48\u2026\uff08\u70b9\u53f3\u4fa7\u53d1\u9001 \u00b7 / \u547d\u4ee4\uff09";
+    }
     input.addEventListener("input", function () { autoGrow(input); updateSendState(); renderCmdMenu(); });
     input.addEventListener("keydown", function (e) {
-      if (e.key === "Enter" && !e.shiftKey && !e.altKey) { e.preventDefault(); send(input.value); return; }
+      if (e.isComposing || e.keyCode === 229) { return; }
+      if (e.key === "Enter") {
+        if (isMobileTouch()) {
+          if (e.ctrlKey || e.metaKey) { e.preventDefault(); send(input.value); }
+          return;
+        }
+        if (!e.shiftKey && !e.altKey) { e.preventDefault(); send(input.value); return; }
+      }
       if (e.key === "ArrowUp" && !input.value && S.history.length) {
         e.preventDefault();
         S.histIdx = S.histIdx < 0 ? S.history.length - 1 : Math.max(0, S.histIdx - 1);
@@ -1110,20 +1155,61 @@ PAGE_JS = r"""
       }
       if (e.key === "Escape") { $("#cmdMenu").classList.add("hidden"); }
     });
+    $("#cmdMenu").addEventListener("click", function (e) {
+      var item = e.target.closest(".item");
+      if (!item) { return; }
+      var cmd = item.dataset.cmd || "";
+      if (!cmd) { return; }
+      $("#cmdMenu").classList.add("hidden");
+      if (item.dataset.arg === "1") {
+        input.value = cmd + " ";
+        input.focus();
+        autoGrow(input);
+        updateSendState();
+      } else {
+        input.value = "";
+        updateSendState();
+        runCommand(cmd);
+      }
+    });
     $("#btnSend").addEventListener("click", function () { send(input.value); });
     $("#btnNew").addEventListener("click", function () { newSession(""); });
     $("#btnTheme").addEventListener("click", toggleTheme);
     $("#btnMenu").addEventListener("click", openSidebar);
+    if ($("#btnCloseSide")) { $("#btnCloseSide").addEventListener("click", closeSidebar); }
     $("#scrim").addEventListener("click", closeSidebar);
+    var touchStartX = 0, touchStartY = 0;
+    $("#sidebar").addEventListener("touchstart", function (e) {
+      if (e.touches && e.touches[0]) { touchStartX = e.touches[0].clientX; touchStartY = e.touches[0].clientY; }
+    }, { passive: true });
+    $("#sidebar").addEventListener("touchend", function (e) {
+      if (!e.changedTouches || !e.changedTouches[0]) { return; }
+      var dx = e.changedTouches[0].clientX - touchStartX;
+      var dy = Math.abs(e.changedTouches[0].clientY - touchStartY);
+      if (dx < -50 && dy < 45) { closeSidebar(); }
+    }, { passive: true });
     $("#search").addEventListener("input", function () { S.filter = this.value; renderSessions(); });
     $("#btnRules").addEventListener("click", showRules);
     $("#btnStatus").addEventListener("click", showStatus);
     $("#btnExport").addEventListener("click", exportSession);
+    if ($("#btnSideRename")) { $("#btnSideRename").addEventListener("click", function () { closeSidebar(); renameSession(""); }); }
+    if ($("#btnSideStatus")) { $("#btnSideStatus").addEventListener("click", function () { closeSidebar(); showStatus(); }); }
+    if ($("#btnSideRules")) { $("#btnSideRules").addEventListener("click", function () { closeSidebar(); showRules(); }); }
+    if ($("#btnSideExport")) { $("#btnSideExport").addEventListener("click", function () { closeSidebar(); exportSession(); }); }
+    if ($("#btnSideClear")) { $("#btnSideClear").addEventListener("click", function () { closeSidebar(); clearSession(); }); }
     $("#btnSearchMsg").addEventListener("click", openMsgSearch);
     $("#msgSearchClose").addEventListener("click", closeMsgSearch);
     $("#msgSearchInput").addEventListener("input", doMsgSearch);
     $("#btnJump").addEventListener("click", function () { scrollToBottom(true); });
     $("#sessionTitle").addEventListener("dblclick", function () { renameSession(""); });
+    $("#sessionTitle").addEventListener("click", function () {
+      if (isMobileTouch() || window.innerWidth <= 880) { renameSession(""); }
+    });
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", function () {
+        if (S.atBottom) { scrollToBottom(false); }
+      });
+    }
     $("#messages").addEventListener("scroll", function () {
       var box = this;
       var nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 90;
@@ -1239,10 +1325,18 @@ PAGE_TEMPLATE = r"""<!doctype html>
       <div class="side-actions">
         <button class="icon-btn" id="btnNew" title="新建会话 (Ctrl+Shift+N)">＋</button>
         <button class="icon-btn" id="btnTheme" title="切换深色 / 浅色">◐</button>
+        <button class="icon-btn only-mobile" id="btnCloseSide" title="收起侧栏">✕</button>
       </div>
     </div>
     <div class="side-search"><input id="search" placeholder="搜索会话…" autocomplete="off"></div>
     <div class="sessions" id="sessionList"></div>
+    <div class="side-tools">
+      <button class="chip-btn" id="btnSideRename">✎ 改名</button>
+      <button class="chip-btn" id="btnSideStatus">ⓘ 状态</button>
+      <button class="chip-btn" id="btnSideRules">§ 规则</button>
+      <button class="chip-btn" id="btnSideExport">⤓ 导出</button>
+      <button class="chip-btn" id="btnSideClear">⌫ 清空</button>
+    </div>
     <div class="side-foot">
       <div class="kv"><span>broker</span><b id="brokerState">…</b></div>
       <div class="kv"><span>人类窗口</span><b id="humanClients">-</b></div>
@@ -1298,16 +1392,16 @@ def render_page() -> str:
 
 GATE_HTML = r"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>HumanChat · 需要访问令牌</title>
 <style>
-body{margin:0;height:100vh;display:grid;place-items:center;background:#0b0e14;color:#e8ecf4;
+body{margin:0;height:100vh;height:100dvh;display:grid;place-items:center;background:#0b0e14;color:#e8ecf4;
      font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}
 .card{background:#111624;border:1px solid #2d3a52;border-radius:16px;padding:26px;width:min(420px,88vw)}
 h1{font-size:17px;margin:0 0 8px}
 p{color:#9aa7bd;font-size:13px;margin:0 0 14px}
 input{width:100%;box-sizing:border-box;background:#161d2e;border:1px solid #2d3a52;border-radius:10px;
-      padding:11px 12px;color:inherit;outline:none;font:inherit}
+      padding:11px 12px;color:inherit;outline:none;font:inherit;font-size:16px}
 button{margin-top:12px;width:100%;border:0;border-radius:10px;padding:11px;font-weight:650;cursor:pointer;
        background:linear-gradient(135deg,#5b8cff,#8b5cf6);color:#fff;font:inherit}
 .err{color:#f87171;font-size:12.5px;margin-top:10px;min-height:18px}

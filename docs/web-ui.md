@@ -32,7 +32,7 @@ python3 humanchat_mcp.py web --port 9000     # 换端口
 python3 humanchat_mcp.py web --no-open       # 只起服务，不开浏览器
 ```
 
-Windows 上直接**双击**仓库里的 `humanchat-web.bat`（或 `humanchat-web.ps1`）即可。
+Windows 上直接运行仓库里的 `.\humanchat-web.ps1` 即可（默认监听 `0.0.0.0` 开启局域网访问并生成令牌）。
 
 装过 pip 包的话，也可以直接用入口脚本：
 

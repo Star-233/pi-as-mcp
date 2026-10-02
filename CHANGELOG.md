@@ -20,7 +20,7 @@
   /rules /search /sound /theme`）、对话内搜索高亮、导出 Markdown、窄屏（手机）适配。
 * `HUMANCHAT_UI=tui|web`：控制 Agent 自动拉起哪一种人类界面，也决定 `attach_command`
   提示给人类的命令（`--ui` 命令行参数等效）。配 `web` 时不再需要任何终端模拟器。
-* Windows 双击启动脚本：`humanchat-web.bat`、`humanchat-web.ps1`。
+* Windows 启动脚本：`humanchat-web.ps1`（默认开启局域网访问）。
 * `humanchat-web` 控制台入口（`pip install` 后可用）。
 * 新的环境变量：`HUMANCHAT_WEB_HOST` / `HUMANCHAT_WEB_PORT` / `HUMANCHAT_WEB_TOKEN` /
   `HUMANCHAT_WEB_OPEN`。

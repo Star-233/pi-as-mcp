@@ -223,7 +223,7 @@ python3 humanchat_mcp.py web --port 9000 --no-open
 python3 humanchat_mcp.py web --host 0.0.0.0    # 手机 / 局域网访问（自动生成令牌并打印地址）
 ```
 
-Windows 上可以直接**双击** `humanchat-web.bat`（或 `humanchat-web.ps1`）——它会确保 broker
+Windows 上可以直接运行 `humanchat-web.ps1`（默认开启 `0.0.0.0` 局域网访问并自动生成令牌）——它会确保 broker
 在跑、启动 Web 服务、打开浏览器；已经开着的话只是再开一个标签页。
 
 界面要点：左侧会话列表（搜索 / 未读徽标 / 等待指示）、顶栏实时状态胶囊
@@ -399,7 +399,7 @@ humanchat-mcp/
 │   ├── launcher.py             # 自动打开终端（tmux / Terminal.app / 各种模拟器）
 │   ├── const.py                # 规则文本、工具名、消息类型
 │   └── config.py               # 环境变量与路径
-├── humanchat-web.bat / .ps1    # Windows 双击启动浏览器界面
+├── humanchat-web.ps1           # Windows 启动浏览器界面（默认开启局域网访问）
 ├── tests/                      # 41 个测试：stdio/HTTP/PTY/重连/local+remote/Web+SSE/SDK 兼容
 ├── examples/demo_agent.py      # 本地体验：模拟守规矩的 Agent（不用 AgentDock）
 └── docs/                       # 接入指南、协议说明、规则片段、终端预览
