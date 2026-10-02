@@ -78,7 +78,7 @@ export function loadConfig(argv: string[]): Config {
     uiToken: str(f["ui-token"], env.PI_MCP_UI_TOKEN ?? ""),
     http,
     httpHost: str(f.host, env.PI_MCP_HOST ?? "127.0.0.1"),
-    httpPort: num(str(f.port, env.PI_MCP_PORT ?? ""), 8765),
+    httpPort: num(str(f.port, env.PI_MCP_PORT ?? ""), 8777),
     httpToken: str(f.token, env.PI_MCP_TOKEN ?? ""),
     serverName: "pi-mcp",
   };

@@ -41,9 +41,10 @@ npm install
 npm test          # config defaults + stdio probe + HTTP/auth/approval probe
 npm run typecheck # tsc --noEmit
 npm run prompt    # print the ported system prompt
+npm run accept    # human acceptance: drives the real server, you reply in the browser
 
 node src/index.ts --root <dir>                                  # stdio + human UI on :8790
-node src/index.ts --root <dir> --http --port 8765 --token <tok> # for a remote client
+node src/index.ts --root <dir> --http --port 8777 --token <tok> # for a remote client
 ```
 
 ## Invariants — do not regress these
@@ -75,6 +76,9 @@ node src/index.ts --root <dir> --http --port 8765 --token <tok> # for a remote c
 - **One blocking call at a time.** A second concurrent `human_ask`/`human_wait` returns
   immediately instead of queueing.
 - **`bash` on Windows** needs a real bash on `PATH`; otherwise use `powershell`.
+- **The listening ports must be free.** A taken port is a hard exit with a clear message,
+  not a silent retry. Port 8765 is occupied by AgentDock on this machine, which is why the
+  default moved to 8777. `npm run accept` asks the OS for free ports instead of guessing.
 - **Security.** This bridge hands a remote model a shell on the host. `--root` confines path
   arguments only. Run it in a container with one mounted work directory, always set `--token`
   when using `--http`, and prefer `--approve bash`.

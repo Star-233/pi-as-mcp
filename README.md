@@ -22,7 +22,7 @@ npm install
 node src/index.ts --root /path/to/workdir
 
 # remote client (HTTP). Point the platform at the printed URL.
-node src/index.ts --root /path/to/workdir --http --port 8765 --token <random-token> --approve bash
+node src/index.ts --root /path/to/workdir --http --port 8777 --token <random-token> --approve bash
 ```
 
 Requires Node 22.6+; the sources are TypeScript and run directly, with no build step.

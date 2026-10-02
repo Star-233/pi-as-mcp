@@ -20,11 +20,18 @@ const sandbox = new Sandbox(cfg.root, cfg.deny);
 log(`sandbox root: ${cfg.root}`);
 if (cfg.deny.length) log(`denied paths: ${cfg.deny.join(", ")}`);
 
-const ui = await startWebUI(channel, {
-  host: cfg.uiHost,
-  port: cfg.uiPort,
-  token: cfg.uiToken,
-});
+let ui: { url: string; close: () => Promise<void> };
+try {
+  ui = await startWebUI(channel, { host: cfg.uiHost, port: cfg.uiPort, token: cfg.uiToken });
+} catch (err) {
+  const code = (err as NodeJS.ErrnoException)?.code;
+  log(
+    code === "EADDRINUSE"
+      ? `human UI port ${cfg.uiPort} is already in use. Pick another with --ui-port.`
+      : `could not start the human UI on port ${cfg.uiPort}: ${err}`,
+  );
+  process.exit(1);
+}
 log(`human channel: ${ui.url}`);
 
 const pi = await loadPiTools(cfg.root, cfg.tools, sandbox);
@@ -84,7 +91,21 @@ if (cfg.http) {
     })();
   });
 
-  await new Promise<void>((resolve) => httpServer.listen(cfg.httpPort, cfg.httpHost, resolve));
+  try {
+    await new Promise<void>((resolve, reject) => {
+      httpServer.once("error", reject);
+      httpServer.listen(cfg.httpPort, cfg.httpHost, resolve);
+    });
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === "EADDRINUSE") {
+      log(`port ${cfg.httpPort} on ${cfg.httpHost} is already in use. Pick another with --port.`);
+    } else {
+      log("could not start the HTTP listener:", err);
+    }
+    await ui.close();
+    process.exit(1);
+  }
   log(`MCP over HTTP: http://${cfg.httpHost}:${cfg.httpPort}/mcp`);
   closeTransport = async () => {
     await new Promise<void>((r) => httpServer.close(() => r()));

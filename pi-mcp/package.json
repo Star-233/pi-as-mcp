@@ -10,7 +10,8 @@
     "http": "node src/index.ts --http",
     "typecheck": "tsc --noEmit",
     "test": "node scripts/config-test.mjs && node scripts/probe.mjs && node scripts/http-probe.mjs",
-    "prompt": "node scripts/show-prompt.mjs"
+    "prompt": "node scripts/show-prompt.mjs",
+    "accept": "node scripts/acceptance.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.0.0",

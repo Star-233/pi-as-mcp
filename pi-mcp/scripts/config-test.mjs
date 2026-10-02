@@ -4,7 +4,7 @@ const c = loadConfig([]);
 const checks = [
   ["blockMs", c.blockMs, 90000],
   ["uiPort", c.uiPort, 8790],
-  ["httpPort", c.httpPort, 8765],
+  ["httpPort", c.httpPort, 8777],
   ["uiHost", c.uiHost, "127.0.0.1"],
   ["httpHost", c.httpHost, "127.0.0.1"],
   ["tools.length", c.tools.length, 8],

@@ -52,7 +52,7 @@ npm install
 node src/index.ts --root /path/to/workdir
 
 # remote client (HTTP). Point Arena at the printed URL.
-node src/index.ts --root /path/to/workdir --http --port 8765 --token "$(openssl rand -hex 16)"
+node src/index.ts --root /path/to/workdir --http --port 8777 --token "$(openssl rand -hex 16)"
 ```
 
 Node 22.6+ is required: the sources are TypeScript and run directly via Node's type
@@ -63,7 +63,7 @@ stripping. There is no build step.
 Arena is in the cloud, so it needs a public URL:
 
 ```bash
-cloudflared tunnel --url http://127.0.0.1:8765
+cloudflared tunnel --url http://127.0.0.1:8777
 # then use:  https://<printed-host>/mcp
 # header:    Authorization: Bearer <your --token>
 ```
@@ -83,7 +83,7 @@ Flags take precedence over environment variables.
 | `--deny` | `PI_MCP_DENY` | `.ssh,.aws,.gnupg,.git-credentials,.netrc,.config/gcloud` | Paths refused even inside the root. |
 | `--block-ms` | `PI_MCP_BLOCK_MS` | 90000 | Max time `human_ask`/`human_wait` block before returning `no_message`. |
 | `--http` | `PI_MCP_HTTP=1` | off | Serve Streamable HTTP instead of stdio. |
-| `--port` / `--host` | `PI_MCP_PORT` / `PI_MCP_HOST` | 8765 / 127.0.0.1 | HTTP listener. |
+| `--port` / `--host` | `PI_MCP_PORT` / `PI_MCP_HOST` | 8777 / 127.0.0.1 | HTTP listener. A port already in use is a hard error, not a silent fallback. |
 | `--token` | `PI_MCP_TOKEN` | none | Bearer token. **Set this if you expose the port.** |
 | `--ui-port` / `--ui-host` | `PI_MCP_UI_PORT` / `PI_MCP_UI_HOST` | 8790 / 127.0.0.1 | Human web UI. |
 | `--ui-token` | `PI_MCP_UI_TOKEN` | none | Token for the human UI. |
@@ -138,6 +138,7 @@ Adapted deliberately:
 ```bash
 npm test        # config defaults, stdio round-trip, HTTP round-trip + approval gate
 npm run typecheck
+npm run accept  # end-to-end human acceptance; you reply in the browser
 ```
 
 The probes spawn the real server and assert on real MCP traffic, including that a sandbox
