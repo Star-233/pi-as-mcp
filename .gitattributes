@@ -1,0 +1,8 @@
+# 仓库内统一 LF；Windows 脚本检出为 CRLF
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.ps1 linguist-language=PowerShell
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.png binary
+*.ico binary

@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>HumanChat · 终端界面与等待循环预览</title>
+</head>
+<body style="margin:0;padding:28px 20px 60px;background:#0b0e14;color:#c9d1d9;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'DejaVu Sans Mono',monospace;line-height:1.5">
+
+<div style="max-width:1000px;margin:0 auto">
+
+  <div style="margin-bottom:6px;font-size:13px;letter-spacing:.18em;color:#7d8590">HUMANCHAT MCP · TERMINAL PREVIEW</div>
+  <h1 style="margin:0 0 8px;font-size:26px;color:#e6edf3;font-weight:600">人类终端界面（真实渲染效果）</h1>
+  <p style="margin:0 0 26px;color:#8b949e;font-size:14px">
+    下面两块是从真实 PTY 会话抓取的界面内容：Agent 汇报完成 → 进入等待 → 人类提问 → Agent 开始处理。
+  </p>
+
+  <!-- 界面 1：Agent 正在等待 -->
+  <div style="margin-bottom:8px;font-size:13px;color:#58a6ff">① Agent 完成任务后没有结束对话，而是停在 human_wait 循环里</div>
+  <div style="border:1px solid #21262d;border-radius:10px;overflow:hidden;box-shadow:0 10px 30px rgba(0,0,0,.45)">
+
+    <div style="background:#161b22;padding:8px 12px;border-bottom:1px solid #21262d;font-size:12px;color:#8b949e">
+      <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#f85149;margin-right:6px"></span>
+      <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#d29922;margin-right:6px"></span>
+      <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#3fb950;margin-right:10px"></span>
+      python3 humanchat_mcp.py attach —— tmux 窗口 “humanchat”
+    </div>
+
+    <div style="background:#0d1117;padding:14px 16px;font-size:13.5px;white-space:pre-wrap">
+<span style="color:#e6edf3;font-weight:700"> humanchat</span><span style="color:#484f58"> │ </span><span style="color:#8b949e">default │ 1 条消息</span><span style="color:#484f58">                            </span><span style="background:#1f6feb;color:#f0f6fc;font-weight:700"> 🔔 正在等待你的回复 (00:02) </span>
+<span style="color:#30363d">────────────────────────────────────────────────────────────────────────────────────</span>
+  <span style="color:#3fb950">✅</span> <span style="color:#79c0ff">Agent</span> <span style="color:#484f58">17:44:32 · done</span>
+    <span style="color:#3fb950">✅ 已完成部署：</span>
+    <span style="color:#3fb950">· 拉取镜像 agentdock:v0.9.1</span>
+    <span style="color:#3fb950">· 重启 3 个容器，健康检查通过</span>
+    <span style="color:#3fb950">· 回滚点：snapshot-20261003-1012</span>
+<span style="color:#30363d">────────────────────────────────────────────────────────────────────────────────────</span>
+  <span style="color:#484f58">说点什么…（Enter 发送 · Ctrl+J 换行 · F1 帮助）</span>
+<span style="background:#1f6feb;color:#f0f6fc"> 输入后按 Enter 发送给正在等待的 Agent · 它在等: 等人类的下一步指令 · 直接说“继续”即可 </span>
+    </div>
+  </div>
+
+  <!-- 界面 2：人类提问 -->
+  <div style="margin:26px 0 8px;font-size:13px;color:#58a6ff">② 人类直接在终端里提问 —— MCP 的 human_wait 立刻返回，Agent 开始处理</div>
+  <div style="border:1px solid #21262d;border-radius:10px;overflow:hidden;box-shadow:0 10px 30px rgba(0,0,0,.45)">
+    <div style="background:#0d1117;padding:14px 16px;font-size:13.5px;white-space:pre-wrap">
+<span style="color:#e6edf3;font-weight:700"> humanchat</span><span style="color:#484f58"> │ </span><span style="color:#8b949e">default │ 2 条消息</span><span style="color:#484f58">                                                       </span><span style="color:#3fb950">Agent: 处理中</span>
+<span style="color:#30363d">────────────────────────────────────────────────────────────────────────────────────</span>
+  <span style="color:#3fb950">✅</span> <span style="color:#79c0ff">Agent</span> <span style="color:#484f58">17:44:32 · done</span>
+    <span style="color:#3fb950">✅ 已完成部署：</span>
+    <span style="color:#3fb950">· 拉取镜像 agentdock:v0.9.1</span>
+    <span style="color:#3fb950">· 重启 3 个容器，健康检查通过</span>
+    <span style="color:#3fb950">· 回滚点：snapshot-20261003-1012</span>
+
+  <span style="color:#3fb950">🧑</span> <span style="color:#3fb950;font-weight:700">你</span> <span style="color:#484f58">17:44:37</span>
+    <span style="color:#79c0ff">帮我确认一下 nginx 的配置有没有生效</span>
+
+<span style="color:#30363d">────────────────────────────────────────────────────────────────────────────────────</span>
+  <span style="color:#484f58">说点什么…（Enter 发送 · Ctrl+J 换行 · F1 帮助）</span>
+<span style="color:#484f58"> Enter 发送 · Ctrl+J 换行 · ↑↓ 滚动 · Tab 会话 · / 命令 · F1 帮助 · Ctrl+C 退出</span>
+    </div>
+  </div>
+
+  <!-- 等待循环 -->
+  <h2 style="margin:38px 0 6px;font-size:19px;color:#e6edf3;font-weight:600">永不超时的等待循环</h2>
+  <p style="margin:0 0 18px;color:#8b949e;font-size:13.5px">
+    AgentDock 对单次 MCP 调用有 300s 上限，所以等待被切成 keepalive 片段：等待本身无限持续，返回只是“续签”。
+  </p>
+
+  <div style="border:1px solid #21262d;border-radius:10px;background:#0d1117;padding:16px 18px;font-size:13px;white-space:pre;overflow-x:auto">
+<span style="color:#79c0ff">Agent</span>                                  <span style="color:#7d8590">MCP 服务端（无限等待）</span>                     <span style="color:#3fb950">人类终端</span>
+  │                                          │                                    │
+  │ <span style="color:#d29922">human_notify(kind="done", then_wait=true)</span> │                                    │
+  ├─────────────────────────────────────────►│ <span style="color:#8b949e">落盘 + 广播 message 事件</span> ─────────►│  <span style="color:#3fb950">🔔 响起，显示结果</span>
+  │                                          │                                    │
+  │ <span style="color:#d29922">human_wait(keepalive_seconds=240)</span>        │                                    │
+  ├─────────────────────────────────────────►│ <span style="color:#8b949e">state=waiting</span>                      │  <span style="background:#1f6feb;color:#f0f6fc"> 等待中 00:02 </span>
+  │            <span style="color:#484f58">◄── 每 15s 心跳 notifications/progress ──►</span>              │
+  │                                          │                                    │
+  │            <span style="color:#484f58">◄── 240s：status="keepalive" ───────────</span>               │
+  │ <span style="color:#f85149">立刻再次调用 human_wait</span>（不是超时，不许结束对话）                      │
+  ├─────────────────────────────────────────►│                                    │
+  │            <span style="color:#484f58">◄── 人类说话：立刻返回 human_message ────</span>               │  <span style="color:#3fb950">🧑 提问已发送</span>
+  │ <span style="color:#79c0ff">回答问题</span> ─► 再次 <span style="color:#d29922">human_wait</span> … 无限循环，直到人类说“结束”          │
+  ▼                                          ▼                                    ▼
+  </div>
+
+  <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:22px">
+    <div style="flex:1 1 280px;border:1px solid #21262d;border-radius:10px;padding:14px 16px;background:#0d1117">
+      <div style="color:#e6edf3;font-weight:700;margin-bottom:6px">消息永不丢失</div>
+      <div style="color:#8b949e;font-size:13px">消息落盘到 <span style="color:#79c0ff">~/.humanchat/sessions/*.jsonl</span>，只有被 Agent 取走才算“已消费”。
+      断线、被取消、进程重启之后，下一次 <span style="color:#79c0ff">human_wait</span> 会立刻取回。</div>
+    </div>
+    <div style="flex:1 1 280px;border:1px solid #21262d;border-radius:10px;padding:14px 16px;background:#0d1117">
+      <div style="color:#e6edf3;font-weight:700;margin-bottom:6px">规则被反复强调</div>
+      <div style="color:#8b949e;font-size:13px">禁止内置提问工具、禁止自行结束对话、keepalive 必须续等 —— 出现在
+      <span style="color:#79c0ff">instructions</span>、工具描述、以及每一次工具返回内容的尾部。</div>
+    </div>
+    <div style="flex:1 1 280px;border:1px solid #21262d;border-radius:10px;padding:14px 16px;background:#0d1117">
+      <div style="color:#e6edf3;font-weight:700;margin-bottom:6px">零依赖 & 免安装</div>
+      <div style="color:#8b949e;font-size:13px">纯 Python 标准库实现 MCP（stdio + streamable HTTP），
+      在 AgentDock 所在机器上 <span style="color:#79c0ff">python3 humanchat_mcp.py</span> 直接可用。</div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>
