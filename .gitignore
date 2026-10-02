@@ -1,12 +1,6 @@
-__pycache__/
-*.py[cod]
-.venv/
-dist/
-build/
-*.egg-info/
-.pytest_cache/
-.humanchat/
+# Node
+node_modules/
 *.log
 
-# 本地快照/备份，不入库
-_backup_pre_web_ui/
+# local scratch from the test probes
+.tmp-*/
