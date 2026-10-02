@@ -82,9 +82,9 @@ class Config:
         # 人类侧 / MCP 侧的共享令牌（可选）。为空表示只靠本机 socket 权限保护。
         self.token = os.environ.get(ENV_TOKEN, "").strip()
 
-        # 默认 keepalive：240s < AgentDock 的 300s 上限，留出安全余量。
+        # 默认 keepalive：90s < AgentDock(300s) 且 < Cloudflare Tunnel(120s)，兼顾大多数反向代理。
         # 0 表示真正永久阻塞（适用于没有单次调用上限的客户端）。
-        self.keepalive_seconds = _env_float(ENV_KEEPALIVE, 240.0)
+        self.keepalive_seconds = _env_float(ENV_KEEPALIVE, 90.0)
         self.heartbeat_seconds = _env_float(ENV_HEARTBEAT, 15.0)
 
         # auto | always | never
