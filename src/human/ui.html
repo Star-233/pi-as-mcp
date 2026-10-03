@@ -28,8 +28,13 @@
   #status.waiting { background:#3a2f12; color:var(--amber); }
   #status.live { background:#12291c; color:var(--green); }
   #status.dead { background:#3d1418; color:var(--red); }
+  /* Hidden by a class, not by `display:none` on the base rule: clearing an inline
+     style (`el.style.display = ''`) falls back to the stylesheet, so a base
+     display:none can never be turned off that way. That is how the countdown
+     shipped permanently invisible. */
   #countdown { font-variant-numeric:tabular-nums; font-size:12px; padding:3px 9px;
-               border-radius:999px; background:#3a2f12; color:var(--amber); display:none; }
+               border-radius:999px; background:#3a2f12; color:var(--amber); }
+  #countdown.hidden { display:none; }
   #countdown.urgent { background:#3d1418; color:var(--red); }
   .iconbtn { background:transparent; border:1px solid var(--line2); color:var(--dim);
              border-radius:7px; padding:3px 9px; font-size:12px; }
@@ -159,7 +164,7 @@
 <header>
   <button class="iconbtn" id="sidebtn" title="Toggle the runtime info panel">☰ info</button>
   <b>pi-mcp</b><span class="sub">human channel</span>
-  <span id="countdown"></span>
+  <span id="countdown" class="hidden"></span>
   <button class="iconbtn" id="bell" title="Notifications and sound">🔕 alerts off</button>
   <span id="status">connecting…</span>
 </header>
@@ -489,11 +494,11 @@ function setStatus(waiting, dead) {
 
 deadline = null;
 setInterval(function () {
-  if (!deadline) { countdown.style.display = 'none'; return; }
+  if (!deadline) { countdown.classList.add('hidden'); return; }
   var left = Math.max(0, Math.round((deadline - Date.now()) / 1000));
-  countdown.style.display = '';
+  countdown.classList.remove('hidden');
+  countdown.classList.toggle('urgent', left <= 15);
   countdown.textContent = '⏳ ' + left + 's';
-  countdown.className = left <= 15 ? 'urgent' : '';
 }, 250);
 
 /* ---------------------------------------------------------------- stream */

@@ -145,7 +145,11 @@ const ENTRIES = [
     && tool?.querySelector(".ok")?.textContent === "✓"
     && tool?.querySelector(".detail")?.textContent === "hi"
     && !tool.classList.contains("running"));
-  check("tool detail is expandable", (tool.click ? (tool.querySelector(".row").click(), tool.classList.contains("open")) : false));
+  tool.querySelector(".row").click();
+  check("tool detail is expandable", tool.classList.contains("open"));
+  check("expanded tool detail is actually visible",
+    w.getComputedStyle(tool.querySelector(".detail")).display !== "none",
+    "computed display: " + w.getComputedStyle(tool.querySelector(".detail")).display);
 
   check("tally counts every role", /1 agent|7 agent/.test(doc.getElementById("tally").textContent)
     && doc.getElementById("tally").textContent.includes("1 tool calls"),
@@ -173,16 +177,34 @@ const ENTRIES = [
   show.checked = false; show.onchange();
   check("tool rows can be hidden", doc.body.classList.contains("notools"));
 
-  // the countdown element
+  // The info panel: toggling the class must actually change what is on screen.
+  check("info panel is hidden by default",
+    w.getComputedStyle(doc.getElementById("side")).display === "none");
+  doc.getElementById("sidebtn").click();
+  check("info panel becomes visible when opened",
+    w.getComputedStyle(doc.getElementById("side")).display !== "none",
+    "computed display: " + w.getComputedStyle(doc.getElementById("side")).display);
+  doc.getElementById("sidebtn").click();
+
+  // the countdown element. Text alone is not enough: this shipped with the right
+  // text and display:none, because `el.style.display = ''` falls back to the
+  // stylesheet rather than showing anything. Check the computed value.
+  const cd = doc.getElementById("countdown");
+  check("countdown is hidden before anything waits", w.getComputedStyle(cd).display === "none");
   es.push({ type: "state", waiting: "ask", deadline: Date.now() + 30000 });
   await new Promise((r) => setTimeout(r, 400));
-  check("countdown shows remaining seconds", /\d+s/.test(doc.getElementById("countdown").textContent),
-    doc.getElementById("countdown").textContent);
+  check("countdown shows remaining seconds", /\d+s/.test(cd.textContent), cd.textContent);
+  check("countdown is actually visible while waiting", w.getComputedStyle(cd).display !== "none",
+    "computed display: " + w.getComputedStyle(cd).display);
+  es.push({ type: "state", waiting: "ask", deadline: Date.now() + 9000 });
+  await new Promise((r) => setTimeout(r, 400));
+  check("countdown turns urgent under 15s", cd.classList.contains("urgent"));
   check("status reads waiting for your answer", doc.getElementById("status").textContent === "waiting for your answer",
     doc.getElementById("status").textContent);
   es.push({ type: "state", waiting: null, deadline: null });
   await new Promise((r) => setTimeout(r, 400));
-  check("countdown hides when answered", doc.getElementById("countdown").style.display === "none");
+  check("countdown hides when answered", w.getComputedStyle(cd).display === "none",
+    "computed display: " + w.getComputedStyle(cd).display);
   check("status returns to connected", doc.getElementById("status").textContent === "connected",
     doc.getElementById("status").textContent);
 
@@ -220,6 +242,13 @@ const ENTRIES = [
  */
 {
   const decls = [...inline[1].matchAll(/^var\s+([A-Za-z_$][\w$]*)/gm)].map((m) => m[1]);
+  // `el.style.display = ''` does not show anything: it removes the inline style and
+  // the computed value falls back to the stylesheet. Anything hidden by a CSS rule
+  // must be shown by removing a class, never by clearing an inline style.
+  const cleared = [...inline[1].matchAll(/(\w+)\.style\.display\s*=\s*(?:''|""|``)/g)].map((m) => m[1]);
+  check("nothing is shown by clearing style.display", cleared.length === 0,
+    cleared.length ? "offenders: " + cleared.join(", ") : "");
+
   const probeWin = new JSDOM("<!doctype html>", { url: "http://127.0.0.1/" }).window;
   const hazards = decls.filter((n) => n in probeWin);
   check(`no top-level var shadows a window property (${decls.length} checked)`,

@@ -141,6 +141,13 @@ port to the internet.
   never left "connecting…". Proven with a five-line jsdom repro, not reasoned about. Top-level
   `var` therefore must not shadow any `window` property — `scripts/ui-render-probe.mjs` now checks
   every declaration against a fresh window. (`let`/`const` shadow safely; only `var` is a hazard.)
+- **`el.style.display = ''` does not show anything.** It removes the inline style, so the computed
+  value falls back to the stylesheet — and `#countdown` carried `display:none` in its base rule. The
+  countdown therefore shipped with the right text, at the right moment, permanently invisible, and a
+  human had to be the one to notice. Show and hide with a class (`classList.toggle('hidden')`),
+  never by clearing an inline style. `scripts/ui-render-probe.mjs` now asserts the *computed*
+  display of every element the page toggles and fails on any `*.style.display = ''` in it. Checking
+  `textContent` alone is exactly what let this through the first time.
 - **`ui.html` is read once, at startup.** `startWebUI` does `fs.readFileSync` before listening, so
   editing the page does nothing to a running bridge. Restart it — and a restart of `pimcp` rotates
   the quick-tunnel hostname and the token, so a remote agent loses its connection.
