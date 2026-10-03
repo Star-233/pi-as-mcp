@@ -27,9 +27,12 @@ full, including the edits that were uncommitted at the time, at tag `humanchat-f
 | `src/prompt.ts` | Reproduces Pi's system-prompt algorithm, plus the `<human>` section. |
 | `src/server.ts` | MCP server: tool list, human tools, approval gate. |
 | `src/sandbox.ts` | Path containment + deny list. |
-| `src/human/channel.ts` | In-memory single-human channel (the whole "session" story). |
-| `src/human/webui.ts`, `ui.html` | Local human UI (SSE + POST). |
+| `src/human/channel.ts` | In-memory single-human channel (the whole "session" story). Chat *and* tool-call entries share one ordered list. |
+| `src/human/webui.ts`, `ui.html` | Local human UI (SSE + POST): timeline, runtime info panel, wait countdown, alerts. |
+| `src/human/vendor/` | marked + KaTeX, copied from `node_modules` by `npm run vendor-ui`. Committed; the UI must work with no network. |
 | `scripts/*.mjs` | Probes that drive the real server over real MCP traffic. |
+| `scripts/ui-probe.mjs` | Drives the UI's HTTP surface: page, vendored assets, `/info`, `/health`, the SSE stream. Asserts; exits non-zero. |
+| `scripts/ui-render-probe.mjs` | Runs the page's own inline script in jsdom against the vendored libs and asserts what it renders. |
 | `bin/pimcp.mjs` | The `pimcp` launcher: ports, token, tunnel, ready check, browser. |
 | `bin/supervise.mjs` | Parent-death watchdog so children cannot outlive the launcher. |
 
@@ -40,8 +43,9 @@ directly via Node's type stripping — there is no build step).
 
 ```bash
 npm install
-npm test          # config defaults + stdio probe + HTTP/auth/approval probe
+npm test          # config defaults + stdio probe + HTTP/auth/approval probe + both UI probes
 npm run typecheck # tsc --noEmit
+npm run vendor-ui # re-copy marked + KaTeX into src/human/vendor
 npm run prompt    # print the ported system prompt
 npm run accept    # human acceptance: drives the real server, you reply in the browser
 npm link          # once: puts `pimcp` on PATH (run from anywhere afterwards)
@@ -129,6 +133,33 @@ port to the internet.
 - **Security.** This bridge hands a remote model a shell on the host. `--root` confines path
   arguments only. Run it in a container with one mounted work directory, always set `--token`
   when using `--http`, and prefer `--approve bash`.
+
+- **`var status` in the human UI silently did nothing, for the life of the file.** `window.status`
+  is a legacy accessor whose setter coerces to a string, so the top-level
+  `var status = document.getElementById('status')` stored `"[object HTMLSpanElement]"` and every
+  later `status.textContent = …` was an assignment onto a primitive: dropped, no error. The pill
+  never left "connecting…". Proven with a five-line jsdom repro, not reasoned about. Top-level
+  `var` therefore must not shadow any `window` property — `scripts/ui-render-probe.mjs` now checks
+  every declaration against a fresh window. (`let`/`const` shadow safely; only `var` is a hazard.)
+- **`ui.html` is read once, at startup.** `startWebUI` does `fs.readFileSync` before listening, so
+  editing the page does nothing to a running bridge. Restart it — and a restart of `pimcp` rotates
+  the quick-tunnel hostname and the token, so a remote agent loses its connection.
+- **`/events` never closes.** Anything that reads it to completion blocks forever; the first
+  version of `ui-probe` did exactly that and had to be killed. Read one frame and abort
+  (`firstFrame` in `scripts/ui-probe.mjs`), or collect frames against an `AbortController`.
+- **A literal `/vendor/../x` never reaches the traversal check.** The URL parser normalises it to
+  `/x`, which 404s on its own. The cases worth testing are the encoded ones (`%2e%2e%2f`,
+  `%2f`, `%5c`), which survive into `path.resolve` and must come back 403.
+- **KaTeX's UMD build cannot be `require`d here.** The repository is `"type": "module"`, Node
+  loads `katex.min.js` as ESM, and top-level `this` is `undefined` there, so the wrapper throws
+  `Cannot set properties of undefined (setting 'katex')`. `eval` it into the jsdom window instead —
+  which is also what a `<script src>` tag actually does.
+- **The human UI is now a place where untrusted text becomes HTML.** Agent messages are markdown
+  from a remote model, rendered by vendored marked and then reduced to a tag/attribute allowlist.
+  That allowlist (`ALLOWED_TAGS`/`ALLOWED_ATTR`/`DROP_ENTIRELY` in `ui.html`) is a security
+  boundary, not styling; `scripts/ui-render-probe.mjs` asserts against `<script>`, `<img>`, inline
+  handlers and `javascript:` URLs. Do not loosen it to fix a rendering complaint without adding a
+  case to that probe.
 
 ## Open questions
 

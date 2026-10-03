@@ -85,6 +85,32 @@ cloudflared tunnel --url http://127.0.0.1:8777
 Quick tunnels get a **new hostname every restart** — re-paste the URL each time. If you get
 Cloudflare **error 1033 / HTTP 530**, you are pointing at a tunnel from a previous run.
 
+## The human UI
+
+`http://127.0.0.1:8790` is a single self-contained page — no CDN, no build step, and the
+markdown and LaTeX libraries are vendored in `src/human/vendor/`, so it works with the
+network off.
+
+- **One timeline.** Agent messages, your messages, and every tool call the agent runs on
+  this machine, in the order they happened. Tool rows are compact
+  (`bash · echo hi · 42 ms · ✓`); click one to expand its output. Failed calls expand
+  themselves. The toolbar hides all tool rows if you only want the conversation.
+- **A runtime info panel** (`☰ info`): sandbox root, exposed tools, which tools need
+  approval, the deny list, the wait window, uptime, the MCP endpoint, and whether the
+  tokens are set. A port serving a shell with no token gets a red warning. Token *values*
+  are never shown.
+- **A countdown.** `human_ask`/`human_wait` block for `--block-ms` (90s by default) and
+  then return `no_message`. The header shows the seconds left so you know whether to
+  hurry.
+- **Alerts.** `🔔` asks for notification permission and turns on a short chime — different
+  tones for a question, a `done`, and an error — plus a flashing tab title. Off by default.
+- Agent messages render as **markdown and LaTeX** (`$…$`, `$$…$$`, `\(...\)`, `\[...\]`).
+  They come from a remote model, so the HTML they produce is reduced to a tag allowlist
+  before it touches the page: raw HTML is displayed, never executed.
+
+The UI is read once at startup. Editing `ui.html` has no effect on a running bridge —
+restart it.
+
 ## Configuration
 
 Flags take precedence over environment variables.
