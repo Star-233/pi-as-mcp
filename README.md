@@ -140,9 +140,11 @@ Adapted deliberately:
   inside Pi.
 - Pi's `docs` and `skills` sections are dropped: they point at Pi's local documentation and
   there is no Pi session here.
-- The `<human>` section is new. It is the distilled replacement for humanchat's per-call
-  "MANDATORY RULES" block: the rules are stated **once**, in the prompt, instead of being
-  appended to every tool result.
+- The `<human>` section is new. It replaces humanchat's per-call "MANDATORY RULES" block,
+  which was appended to every tool result; the rules are stated once, in the prompt — **with one
+  deliberate exception**. A `no_message` result leads with a plain sentence telling the model to
+  call again, because stating the rule only in the prompt did not hold a real client agent in the
+  wait loop. See the gotcha below.
 - Shell session variables (`PI_SESSION_ID`, `PI_MODEL`, …) are switched off via
   `exposeSessionEnvironment: false`, since there is no session; this also drops the
   guideline telling the model to read them.
@@ -177,6 +179,12 @@ escape is refused and that an unapproved shell command never runs.
   curl — while the tunnel is perfectly healthy for remote clients. The reliable signal is
   cloudflared logging `Registered tunnel connection`; `pimcp` waits for exactly that and then
   reports the local probe as advisory only.
+- **A model will happily end its turn on a `no_message`.** Observed with a real client agent:
+  it called `human_wait` once, read `no_message`, and ended the conversation — silently dropping
+  the human, which is the exact failure this bridge exists to prevent. Prompt-only instruction was
+  not enough, so a `no_message` result now leads with an imperative sentence and the `<human>`
+  section names the failure mode outright ("your turn must not end while you are waiting"). If you
+  touch either, re-test with a real client agent — `npm test` cannot catch this.
 - **Port 8765 is taken by AgentDock on this machine**, which is why the HTTP default is 8777.
 
 ## History

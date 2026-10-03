@@ -41,7 +41,7 @@ function humanToolDefs(): any[] {
     ),
     toolSchema(
       "human_ask",
-      "Ask the human a question and block until they answer. Returns status='human_message' with their reply, or status='no_message' if they did not answer in time (then call again). This is the ONLY way to get an answer from the human.",
+      "Ask the human a question and block until they answer. This is the ONLY way to get an answer from the human. Returns status='human_message' with their reply, or status='no_message' if they had not replied when the wait window closed. A no_message is not a failure: ask again, or switch to human_wait and keep waiting. Never end your turn while waiting for the human.",
       {
         type: "object",
         required: ["text"],
@@ -56,7 +56,7 @@ function humanToolDefs(): any[] {
     ),
     toolSchema(
       "human_wait",
-      "Block until the human says anything. Use this instead of ending your turn. Returns status='human_message' with what they said, or status='no_message' if nothing arrived in time (then call it again immediately).",
+      "Block until the human says anything. Use this instead of ending your turn. Returns status='human_message' with what they said, or status='no_message' if nothing arrived before the wait window closed. A no_message is not an error and not a reason to stop: call human_wait again immediately and keep calling it for as long as the conversation lasts. Never end your turn while waiting for the human.",
       {
         type: "object",
         properties: {
@@ -69,6 +69,28 @@ function humanToolDefs(): any[] {
       },
     ),
   ];
+}
+
+/**
+ * A no_message result is the most misread thing this server returns. Models see a quiet
+ * JSON body, conclude the human is gone, and end their turn - dropping the human silently.
+ * Lead with a plain sentence so it cannot be lost among the fields, and repeat it on every
+ * occurrence rather than trusting the prompt to be remembered.
+ */
+function humanResult(res: { status: string }, again: string): { content: ContentPart[] } {
+  if (res.status !== "no_message") return { content: asJson(res) };
+  // One authoritative sentence, repeated in the payload, so the prose and the JSON cannot
+  // disagree about which tool to call.
+  const directive =
+    `The human has said nothing yet. This is not a failure and not the end of anything: ` +
+    `call ${again} again now, and keep calling it. Do not end your turn while waiting for ` +
+    `the human.`;
+  return {
+    content: [
+      { type: "text", text: directive },
+      ...asJson({ ...res, hint: directive }),
+    ],
+  };
 }
 
 function clampBlock(requested: unknown, cap: number): number {
@@ -163,7 +185,7 @@ export function createMcpServer(cfg: Config, piTools: AdaptedTool[], channel: Hu
       const res = await withKeepAlive(extra, () =>
         channel.ask(String(args.text ?? ""), clampBlock(args.max_block_ms, cfg.blockMs)),
       );
-      return { content: asJson(res) };
+      return humanResult(res, "human_ask");
     }
 
     if (name === "human_wait") {
@@ -171,7 +193,7 @@ export function createMcpServer(cfg: Config, piTools: AdaptedTool[], channel: Hu
       const res = await withKeepAlive(extra, () =>
         channel.wait(reason, clampBlock(args.max_block_ms, cfg.blockMs)),
       );
-      return { content: asJson(res) };
+      return humanResult(res, "human_wait");
     }
 
     const tool = byName.get(name);

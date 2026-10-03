@@ -101,9 +101,13 @@ port to the internet.
   90s. Raising `--block-ms` past that risks a 524 before the human answers.
 - **Quick tunnels rotate hostnames on every restart.** A stale URL gives Cloudflare error
   1033 / HTTP 530 — it does not mean the server is down.
-- **`human_ask`/`human_wait` may return `no_message`.** That is a "the human has not spoken yet"
-  signal, not a failure. The prompt tells the model to call again; a model that ignores this
-  will end its turn early.
+- **`human_ask`/`human_wait` may return `no_message`.** That is a "the human has not spoken
+  yet" signal, not a failure. Do not assume the prompt is enough: a real client agent called
+  `human_wait` once, got `no_message`, and ended its turn — silently dropping the human. So
+  `humanResult()` in `src/server.ts` now leads every `no_message` with a plain sentence telling
+  the model to call again, and the `<human>` section names the failure mode outright. This
+  deliberately reverses the earlier "state the rules once, never per result" decision: evidence
+  beat the tidier design. Re-verify with a real client agent, not just `npm test`.
 - **One blocking call at a time.** A second concurrent `human_ask`/`human_wait` returns
   immediately instead of queueing.
 - **`bash` on Windows** needs a real bash on `PATH`; otherwise use `powershell`.

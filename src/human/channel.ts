@@ -19,8 +19,14 @@ export type ChannelEvent =
   | { type: "entry"; entry: Entry }
   | { type: "state"; waiting: "ask" | "wait" | null };
 
+/**
+ * Fallback text only. The MCP layer replaces this with a tool-specific sentence that names
+ * the tool to call again (see humanResult in server.ts), so the two cannot drift apart.
+ */
 const NO_MESSAGE_HINT =
-  "The human has not replied yet. Call human_wait again to keep waiting; do not end the conversation.";
+  "Nothing arrived before the wait window closed. This is not a failure and not a reason to " +
+  "stop: call it again immediately, and keep calling it. Do not end your turn while waiting " +
+  "for the human.";
 
 export class HumanChannel {
   private entries: Entry[] = [];
