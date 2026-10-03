@@ -79,23 +79,17 @@
   #log { flex:1; overflow-y:auto; padding:14px; display:flex; flex-direction:column; gap:9px; }
   .empty { color:var(--dimmer); text-align:center; margin:auto; font-size:13px; }
 
-  .m { max-width:min(760px,88%); padding:9px 12px; border-radius:10px;
+  /* One bubble, one look. A message's kind is deliberately not rendered: a chat
+     has no message types, and "the agent is waiting for you" is already carried by
+     the status pill, the countdown and the alerts - all of them harder to miss
+     than a coloured border buried somewhere in the scrollback. */
+  .m { max-width:min(720px,78%); padding:9px 12px; border-radius:12px;
        word-break:break-word; border:1px solid transparent; }
   .agent { align-self:flex-start; background:var(--panel2); border-color:var(--line); }
   .human { align-self:flex-end; background:#1f3a5f; border-color:#2b4f7d; white-space:pre-wrap; }
-  .meta { font-size:11px; color:#7d8593; margin-bottom:3px; display:flex; gap:6px; align-items:center; }
-  .badge { border-radius:4px; padding:0 5px; font-size:10px; letter-spacing:.03em;
-           background:#232830; border:1px solid var(--line2); color:var(--dim); }
-  .badge.question { background:#3a2f12; border-color:#6b5410; color:var(--amber); }
-  .badge.done { background:#12291c; border-color:#1f5130; color:var(--green); }
-  .badge.error { background:#3d1418; border-color:#6e2027; color:var(--red); }
-  .badge.progress { background:#132a44; border-color:#1f4a75; color:#79b8ff; }
-  .badge.note { background:#2a2140; border-color:#4a3a70; color:var(--purple); }
-  .badge.waiting { background:#232830; color:var(--dimmer); }
-  .m.q { border-color:var(--amber) !important; }
-  .m.done { border-left:3px solid var(--green); }
-  .m.error { border-left:3px solid var(--red); }
-  .m.progress, .m.note, .m.waiting { opacity:.92; }
+  .meta { font-size:10.5px; color:#5d6470; margin-bottom:3px; display:flex; gap:6px;
+          align-items:center; }
+  .human .meta { justify-content:flex-end; }
 
   /* markdown body */
   .md > :first-child { margin-top:0; }
@@ -389,13 +383,6 @@ if (localStorage.getItem('pimcp.alerts') === '1') { bell.textContent = '🔔 tap
 function nearBottom() { return log.scrollHeight - log.scrollTop - log.clientHeight < 80; }
 function stick(was) { if (was) log.scrollTop = log.scrollHeight; }
 
-function badge(kind) {
-  var b = document.createElement('span');
-  b.className = 'badge ' + kind;
-  b.textContent = kind;
-  return b;
-}
-
 function renderTool(e) {
   var d = document.createElement('div');
   d.className = 'tool' + (e.status === 'running' ? ' running' : e.status === 'error' ? ' error' : '');
@@ -442,13 +429,9 @@ function render(e) {
   counts[e.role]++;
   var d = document.createElement('div');
   var kind = e.kind || 'message';
-  d.className = 'm ' + e.role + (kind === 'question' ? ' q' : '') +
-    (kind === 'done' || kind === 'error' ? ' ' + kind : '');
+  d.className = 'm ' + e.role;
   var meta = document.createElement('div');
   meta.className = 'meta';
-  var who = document.createElement('span');
-  who.textContent = e.role === 'agent' ? 'agent' : 'you';
-  meta.appendChild(who); meta.appendChild(badge(kind));
   var time = document.createElement('span');
   time.textContent = fmt(e.at); time.title = new Date(e.at).toLocaleString();
   meta.appendChild(time);

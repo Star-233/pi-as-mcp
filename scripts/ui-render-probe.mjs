@@ -27,6 +27,7 @@ if (!inline) {
 const shell = html.replace(/<script[\s\S]*?<\/script>/g, "");
 
 let failures = 0;
+const notifyLog = [];
 function check(name, ok, detail = "") {
   console.log(`${ok ? "ok  " : "FAIL"}  ${name}${detail ? " — " + detail : ""}`);
   if (!ok) failures++;
@@ -52,6 +53,9 @@ async function boot(withLibs = true) {
   });
   const w = dom.window;
   w.alert = () => {};
+  // Record what the page would have alerted on, to prove kinds still mean
+  // something server-side even though they no longer mean anything visually.
+  notifyLog.length = 0;
   w.fetch = async (u) => ({
     ok: true, status: 200,
     json: async () => (String(u).includes("/info") ? INFO : { ok: true, waiting: null, deadline: null, entries: 0, startedAt: Date.now() }),
@@ -86,12 +90,17 @@ const ENTRIES = [
   { id: "e7", role: "agent", kind: "error", at: at + 6, text: "broke" },
   { id: "e8", role: "human", kind: "message", at: at + 7, text: "my own <b>text</b> stays literal" },
   { id: "e9", role: "tool", kind: "tool", at: at + 8, text: "echo hi", tool: "bash", status: "running" },
+  { id: "e10", role: "agent", kind: "question", at: at + 9, text: "may I proceed?" },
 ];
 
 // ---------------------------------------------------------------- with libs
 {
   const { dom, w, es } = await boot(true);
   const doc = w.document;
+  // Kinds no longer reach the markup, but they must still drive the alerts - that
+  // is the only remaining signal that the agent is blocked on you.
+  w.chime = (kind) => notifyLog.push(kind);
+  w.alerts = true;
   es.push({ type: "history", waiting: null, deadline: null, startedAt: at, entries: ENTRIES });
   await new Promise((r) => setTimeout(r, 50));
 
@@ -127,9 +136,17 @@ const ENTRIES = [
   const preInMath = [...log.querySelectorAll("pre")].some((p) => p.querySelector(".katex"));
   check("code blocks are not math-scanned", !preInMath);
 
-  check("done/error kinds get distinct styling",
-    Boolean(log.querySelector(".m.done")) && Boolean(log.querySelector(".m.error")));
-  check("kind badges are labelled", (log.querySelector(".badge.done")?.textContent) === "done");
+  // A chat has one bubble shape. Kinds still travel in the data (the server sends
+  // them and the alerts still key off them) but none of it reaches the markup.
+  check("no kind badges are rendered", log.querySelectorAll(".badge").length === 0,
+    `${log.querySelectorAll(".badge").length} badges`);
+  const agentBubbles = [...log.querySelectorAll(".m.agent")];
+  check("every agent bubble carries the same single class",
+    agentBubbles.length >= 5 && agentBubbles.every((b) => b.className === "m agent"),
+    [...new Set(agentBubbles.map((b) => b.className))].join(" | "));
+  check("kinds still drive the alerts, not the styling",
+    notifyLog.includes("question") && notifyLog.includes("done") && notifyLog.includes("error"),
+    notifyLog.join(","));
 
   const mine = [...log.querySelectorAll(".m.human")].pop();
   check("human messages are not markdown-parsed", mine?.querySelectorAll("b").length === 0
@@ -151,8 +168,8 @@ const ENTRIES = [
     w.getComputedStyle(tool.querySelector(".detail")).display !== "none",
     "computed display: " + w.getComputedStyle(tool.querySelector(".detail")).display);
 
-  check("tally counts every role", /1 agent|7 agent/.test(doc.getElementById("tally").textContent)
-    && doc.getElementById("tally").textContent.includes("1 tool calls"),
+  check("tally counts every role",
+    doc.getElementById("tally").textContent === "8 agent · 1 you · 1 tool calls",
     doc.getElementById("tally").textContent);
 
   // the info panel
