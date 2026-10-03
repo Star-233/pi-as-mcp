@@ -19,6 +19,8 @@ await sleep(2500);
 
 const ep = "http://127.0.0.1:" + PORT + "/mcp";
 let id = 1;
+let failures = 0;
+const expect = (ok) => { if (!ok) failures++; };
 
 async function mcp(method, params, token = TOKEN) {
   const res = await fetch(ep, {
@@ -81,6 +83,39 @@ try {
   const ask = await askP;
   console.log("8) human_ask       ->", firstText(ask).replace(/\s+/g, " "));
 
+  // --- the approval gate against a queued, multi-message answer ---
+  // The gate drains the queue like everything else, so it has to judge every line.
+  // A retraction anywhere must deny; so must anything unrecognised.
+  await post("yes");
+  await post("no, wait");
+  const retract = await mcp("tools/call", { name: "bash", arguments: { command: "echo SHOULD-NOT-RUN" } });
+  const deniedRetract = Boolean(retract.msg?.result?.isError);
+  expect(deniedRetract);
+  console.log("9) queued yes+no   ->", deniedRetract ? "denied, the retraction wins" : "*** RAN: " + firstText(retract));
+
+  await post("no");
+  await post("yes");
+  const flip = await mcp("tools/call", { name: "bash", arguments: { command: "echo SHOULD-NOT-RUN" } });
+  const deniedFlip = Boolean(flip.msg?.result?.isError);
+  expect(deniedFlip);
+  console.log("10) queued no+yes  ->", deniedFlip ? "denied, fails closed on any doubt" : "*** RAN: " + firstText(flip));
+
+  await post("yes");
+  await post("ok");
+  const both = await mcp("tools/call", { name: "bash", arguments: { command: "echo both-approved" } });
+  const ranBoth = !both.msg?.result?.isError;
+  expect(ranBoth);
+  console.log("11) queued yes+ok  ->", ranBoth ? JSON.stringify(firstText(both).trim()) : "*** DENIED: " + firstText(both));
+
+  // --- and the merged form itself, over real MCP traffic ---
+  await post("line one");
+  await post("line two");
+  const merged = await mcp("tools/call", { name: "human_wait", arguments: { max_block_ms: 5000 } });
+  const payload = JSON.parse(firstText(merged));
+  console.log("12) merged answer  ->", JSON.stringify(payload.text));
+  expect(payload.count === 2);
+  console.log("    count          ->", payload.count);
+
   console.log("\n--- server log ---");
   console.log(logs.join("").trim());
 } catch (e) {
@@ -88,4 +123,10 @@ try {
   console.error(logs.join("").trim());
 } finally {
   child.kill();
+  await sleep(200);
+}
+
+if (failures) {
+  console.error(`\n${failures} http check(s) FAILED`);
+  process.exit(1);
 }

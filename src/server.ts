@@ -58,7 +58,7 @@ function humanToolDefs(): any[] {
     ),
     toolSchema(
       "human_ask",
-      "Ask the human a question and block until they answer. This is the ONLY way to get an answer from the human. Returns status='human_message' with their reply, or status='no_message' if they had not replied when the wait window closed. A no_message is not a failure: ask again, or switch to human_wait and keep waiting. Never end your turn while waiting for the human.",
+      "Ask the human a question and block until they answer. This is the ONLY way to get an answer from the human. Returns status='human_message' with their reply, or status='no_message' if they had not replied when the wait window closed. Anything they typed while you were busy is queued and arrives with this result: several messages are merged oldest-first, each line prefixed [n/total . HH:MM:SS], and 'count' says how many. Read every line before acting - a later one may retract an earlier one. A no_message is not a failure: ask again, or switch to human_wait and keep waiting. Never end your turn while waiting for the human.",
       {
         type: "object",
         required: ["text"],
@@ -73,7 +73,7 @@ function humanToolDefs(): any[] {
     ),
     toolSchema(
       "human_wait",
-      "Block until the human says anything. Use this instead of ending your turn. Returns status='human_message' with what they said, or status='no_message' if nothing arrived before the wait window closed. A no_message is not an error and not a reason to stop: call human_wait again immediately and keep calling it for as long as the conversation lasts. Never end your turn while waiting for the human.",
+      "Block until the human says anything. Use this instead of ending your turn. Returns status='human_message' with everything they have said since your last call - one message arrives verbatim, several are merged oldest-first with a [n/total . HH:MM:SS] prefix on each line and 'count' set - or status='no_message' if nothing arrived before the wait window closed. Read every line before acting; a later one may retract an earlier one. A no_message is not an error and not a reason to stop: call human_wait again immediately and keep calling it for as long as the conversation lasts. Never end your turn while waiting for the human.",
       {
         type: "object",
         properties: {
@@ -108,6 +108,32 @@ function humanResult(res: { status: string }, again: string): { content: Content
       ...asJson({ ...res, hint: directive }),
     ],
   };
+}
+
+const APPROVAL_YES = /^(y|yes|ok|okay|批准|可以|同意|好)/i;
+const QUEUE_PREFIX = /^\[\d+\/\d+ · \d{2}:\d{2}:\d{2}\]\s*/;
+
+/**
+ * Decide an approval from a human answer that may be several queued messages
+ * merged into one string (see `delivery` in channel.ts).
+ *
+ * Every line has to be an approval. A retraction anywhere denies, and so does
+ * anything unrecognised - the gate fails closed. Judging only the first line
+ * would be worse than useless here: "yes" followed by "wait, no" would run the
+ * command, which is exactly the case a retraction exists to prevent.
+ *
+ * Note that the merged form cannot be matched by the old one-shot regex: it
+ * starts with "[1/2 · ", so the ^ anchor never fires and every multi-message
+ * answer would deny. Stripping the prefixes is what makes merging compatible
+ * with this gate at all.
+ */
+function approves(verdict: { status: string; text?: string }): boolean {
+  if (verdict.status !== "human_message" || typeof verdict.text !== "string") return false;
+  const lines = verdict.text
+    .split("\n")
+    .map((l) => l.replace(QUEUE_PREFIX, "").trim())
+    .filter(Boolean);
+  return lines.length > 0 && lines.every((l) => APPROVAL_YES.test(l));
 }
 
 function clampBlock(requested: unknown, cap: number): number {
@@ -228,8 +254,7 @@ export function createMcpServer(cfg: Config, piTools: AdaptedTool[], channel: Hu
           cfg.blockMs,
         ),
       );
-      const approved =
-        verdict.status === "human_message" && /^(y|yes|ok|okay|批准|可以|同意|好)/i.test(verdict.text.trim());
+      const approved = approves(verdict);
       if (!approved) {
         return {
           content: text(`Denied: the human did not approve this ${name} call.`),

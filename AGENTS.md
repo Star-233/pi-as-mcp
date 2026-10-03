@@ -31,6 +31,7 @@ full, including the edits that were uncommitted at the time, at tag `humanchat-f
 | `src/human/webui.ts`, `ui.html` | Local human UI (SSE + POST): timeline, runtime info panel, wait countdown, alerts. |
 | `src/human/vendor/` | marked + KaTeX, copied from `node_modules` by `npm run vendor-ui`. Committed; the UI must work with no network. |
 | `scripts/*.mjs` | Probes that drive the real server over real MCP traffic. |
+| `scripts/channel-probe.mjs` | The queue semantics of the human channel: draining, ordering, stamps, the cap, the retraction case. |
 | `scripts/ui-probe.mjs` | Drives the UI's HTTP surface: page, vendored assets, `/info`, `/health`, the SSE stream. Asserts; exits non-zero. |
 | `scripts/ui-render-probe.mjs` | Runs the page's own inline script in jsdom against the vendored libs and asserts what it renders. |
 | `bin/pimcp.mjs` | The `pimcp` launcher: ports, token, tunnel, ready check, browser. |
@@ -159,6 +160,21 @@ port to the internet.
   deliberately *not* rendered: the page used to show a coloured badge and border per kind and it
   read as noise. "The agent is waiting for you" belongs in the status pill, the countdown and the
   chime, which are harder to miss than a border buried in the scrollback.
+- **`human_ask`/`human_wait` hand over the whole queue, not one message.** They used to `shift()` a
+  single item, so a human who typed three short lines had them delivered across three separate calls
+  and the agent could act on an instruction the second line retracted. Everything queued since the
+  last call now arrives in one result: one message verbatim, several merged oldest first as
+  `[n/total · HH:MM:SS] text`, with `count` in the JSON. `scripts/channel-probe.mjs` pins it.
+  Deliberately no settle window and no queue cap — the first message wakes a blocked call
+  immediately and anything typed after that waits for the next call, and dropping a human's
+  messages to protect a context window is the wrong trade.
+- **The approval gate has to parse every line of a merged answer.** The tempting shortcut — give the
+  gate only the first queued message — is *worse* than merging: `["yes", "no"]` would approve on the
+  "yes" and silently discard the retraction. `approves()` in `src/server.ts` strips the queue
+  prefixes and requires every line to match, so any retraction, or anything unrecognised, denies.
+  The stripping is not cosmetic: the old `^`-anchored regex never matches a merged string because it
+  starts with `[1/2 · `, so merging without stripping would deny every multi-message answer.
+  `scripts/http-probe.mjs` drives yes+no, no+yes and yes+ok over real MCP traffic.
 - **`/events` never closes.** Anything that reads it to completion blocks forever; the first
   version of `ui-probe` did exactly that and had to be killed. Read one frame and abort
   (`firstFrame` in `scripts/ui-probe.mjs`), or collect frames against an `AbortController`.

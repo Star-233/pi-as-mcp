@@ -114,6 +114,17 @@ network off.
 `ui.html` is read on every request, so changing it costs a browser refresh, not a restart of
 the bridge. Changes to `src/*.ts` still need a restart.
 
+### The queue
+
+Whatever you type while the agent is busy is queued, and its next `human_ask`/`human_wait` takes
+**all of it** at once — oldest first, each line stamped `[n/total · HH:MM:SS]`. A single message
+arrives verbatim. So three short lines are read as the one thought they are, and a retraction
+arrives together with the message it retracts instead of a round trip later.
+
+There is no settle window: the first message wakes a blocked call immediately, and anything typed
+after that waits for the next call. There is no cap on the queue, and nothing is persisted, so a
+restart clears it.
+
 ## Configuration
 
 Flags take precedence over environment variables.

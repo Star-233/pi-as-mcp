@@ -25,7 +25,7 @@ export type Entry = {
 };
 
 export type WaitResult =
-  | { status: "human_message"; text: string; at: number }
+  | { status: "human_message"; text: string; at: number; count: number }
   | { status: "no_message"; waited_ms: number; hint: string };
 
 export type ChannelEvent =
@@ -41,6 +41,36 @@ const NO_MESSAGE_HINT =
   "Nothing arrived before the wait window closed. This is not a failure and not a reason to " +
   "stop: call it again immediately, and keep calling it. Do not end your turn while waiting " +
   "for the human.";
+
+/** HH:MM:SS, local time - the human is the one who has to recognise it. */
+function stamp(at: number): string {
+  return new Date(at).toTimeString().slice(0, 8);
+}
+
+/**
+ * Turn one or more queued messages into a single result.
+ *
+ * One message is returned verbatim: no prefix, no ceremony, and every consumer
+ * that matches on the text - the approval regex in server.ts, the probes - keeps
+ * working untouched.
+ *
+ * Several are merged oldest first, each line numbered and timestamped. The order
+ * matters because the last line often retracts an earlier one, and the stamps
+ * matter because the queue has no age limit: a line from forty minutes ago looks
+ * exactly like one from four seconds ago unless it says when it was written.
+ */
+function delivery(msgs: { text: string; at: number }[]): WaitResult {
+  const last = msgs[msgs.length - 1];
+  if (msgs.length === 1) {
+    return { status: "human_message", text: last.text, at: last.at, count: 1 };
+  }
+  return {
+    status: "human_message",
+    text: msgs.map((m, i) => `[${i + 1}/${msgs.length} · ${stamp(m.at)}] ${m.text}`).join("\n"),
+    at: last.at,
+    count: msgs.length,
+  };
+}
 
 export class HumanChannel {
   private entries: Entry[] = [];
@@ -123,10 +153,19 @@ export class HumanChannel {
     return this.await(blockMs, "wait");
   }
 
+  /**
+   * Hands over everything the human has said since the last call, oldest first.
+   *
+   * One message per call was the original behaviour and it was wrong: a human who
+   * types three short lines has had one thought, and delivering only the first
+   * line means the agent can act on an instruction the second line retracts.
+   * Callers that need to judge the answer - the approval gate - parse every line
+   * rather than asking for fewer of them.
+   */
   private await(blockMs: number, kind: "ask" | "wait"): Promise<WaitResult> {
-    const queued = this.inbox.shift();
-    if (queued) {
-      return Promise.resolve({ status: "human_message", text: queued.text, at: queued.at });
+    const queued = this.inbox.splice(0);
+    if (queued.length) {
+      return Promise.resolve(delivery(queued));
     }
     if (this.pending) {
       return Promise.resolve({
@@ -157,7 +196,10 @@ export class HumanChannel {
       const { resolve } = this.pending;
       this.pending = null;
       this.emit(this.state());
-      resolve({ status: "human_message", text: trimmed, at: entry.at });
+      // A call only becomes pending when the inbox was empty, so this message is
+      // normally the whole delivery. Drain anyway: anything else that landed
+      // belongs with this one, not with whatever the agent asks next.
+      resolve(delivery([...this.inbox.splice(0), { text: trimmed, at: entry.at }]));
     } else {
       this.inbox.push({ text: trimmed, at: entry.at });
     }
