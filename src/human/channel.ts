@@ -1,14 +1,27 @@
 /**
  * A single in-memory human channel. No sessions, no persistence: this process
  * is meant to live for exactly one sitting.
+ *
+ * The timeline carries three roles: `agent` and `human` are conversation, `tool`
+ * is the record of what the agent did on this machine between messages. They
+ * share one ordered list so the UI can show doing and saying in the order they
+ * actually happened.
  */
+
+/** Enough for a long sitting; a tool-heavy session fills this faster than chat does. */
+const MAX_ENTRIES = 1000;
 
 export type Entry = {
   id: string;
-  role: "agent" | "human";
+  role: "agent" | "human" | "tool";
   kind: string;
   text: string;
   at: number;
+  /** Present on `tool` entries only. */
+  tool?: string;
+  status?: "running" | "ok" | "error";
+  ms?: number;
+  detail?: string;
 };
 
 export type WaitResult =
@@ -17,7 +30,8 @@ export type WaitResult =
 
 export type ChannelEvent =
   | { type: "entry"; entry: Entry }
-  | { type: "state"; waiting: "ask" | "wait" | null };
+  | { type: "entry_update"; id: string; patch: Partial<Entry> }
+  | { type: "state"; waiting: "ask" | "wait" | null; deadline: number | null };
 
 /**
  * Fallback text only. The MCP layer replaces this with a tool-specific sentence that names
@@ -34,10 +48,13 @@ export class HumanChannel {
   private inbox: { text: string; at: number }[] = [];
   private pending: {
     kind: "ask" | "wait";
+    /** Epoch ms at which the window closes. The UI counts down from this. */
+    deadline: number;
     resolve: (r: WaitResult) => void;
     timer: ReturnType<typeof setTimeout>;
   } | null = null;
   private seq = 0;
+  private readonly startedAt = Date.now();
 
   subscribe(fn: (e: ChannelEvent) => void): () => void {
     this.subs.add(fn);
@@ -54,10 +71,14 @@ export class HumanChannel {
     }
   }
 
-  private push(role: "agent" | "human", kind: string, text: string): Entry {
-    const entry: Entry = { id: `e${++this.seq}`, role, kind, text, at: Date.now() };
+  private state(): ChannelEvent {
+    return { type: "state", waiting: this.waiting(), deadline: this.deadline() };
+  }
+
+  private push(role: Entry["role"], kind: string, text: string, extra: Partial<Entry> = {}): Entry {
+    const entry: Entry = { id: `e${++this.seq}`, role, kind, text, at: Date.now(), ...extra };
     this.entries.push(entry);
-    if (this.entries.length > 500) this.entries.splice(0, this.entries.length - 500);
+    if (this.entries.length > MAX_ENTRIES) this.entries.splice(0, this.entries.length - MAX_ENTRIES);
     this.emit({ type: "entry", entry });
     return entry;
   }
@@ -68,6 +89,21 @@ export class HumanChannel {
 
   waiting(): "ask" | "wait" | null {
     return this.pending?.kind ?? null;
+  }
+
+  /** Epoch ms when the current wait window closes, or null when nothing is waiting. */
+  deadline(): number | null {
+    return this.pending?.deadline ?? null;
+  }
+
+  /** Everything the info panel needs that is not static configuration. */
+  snapshot(): { waiting: "ask" | "wait" | null; deadline: number | null; entries: number; startedAt: number } {
+    return {
+      waiting: this.waiting(),
+      deadline: this.deadline(),
+      entries: this.entries.length,
+      startedAt: this.startedAt,
+    };
   }
 
   /** Agent -> human, fire and forget. */
@@ -103,11 +139,11 @@ export class HumanChannel {
     return new Promise<WaitResult>((resolve) => {
       const timer = setTimeout(() => {
         this.pending = null;
-        this.emit({ type: "state", waiting: null });
+        this.emit(this.state());
         resolve({ status: "no_message", waited_ms: Date.now() - started, hint: NO_MESSAGE_HINT });
       }, blockMs);
-      this.pending = { kind, resolve, timer };
-      this.emit({ type: "state", waiting: kind });
+      this.pending = { kind, deadline: started + blockMs, resolve, timer };
+      this.emit(this.state());
     });
   }
 
@@ -120,11 +156,30 @@ export class HumanChannel {
       clearTimeout(this.pending.timer);
       const { resolve } = this.pending;
       this.pending = null;
-      this.emit({ type: "state", waiting: null });
+      this.emit(this.state());
       resolve({ status: "human_message", text: trimmed, at: entry.at });
     } else {
       this.inbox.push({ text: trimmed, at: entry.at });
     }
+  }
+
+  /**
+   * Agent -> timeline: a tool call started. Returns the entry id so the caller can
+   * close it with toolEnd. Deliberately never throws: recording what happened must
+   * not be able to break the call itself.
+   */
+  toolStart(tool: string, text: string): string {
+    return this.push("tool", "tool", text, { tool, status: "running" }).id;
+  }
+
+  /** Close a tool entry with its outcome. A no-op if the entry was evicted. */
+  toolEnd(id: string, ok: boolean, ms: number, detail?: string): void {
+    const entry = this.entries.find((e) => e.id === id);
+    if (!entry) return;
+    const patch: Partial<Entry> = { status: ok ? "ok" : "error", ms };
+    if (detail) patch.detail = detail;
+    Object.assign(entry, patch);
+    this.emit({ type: "entry_update", id, patch });
   }
 
   /** Release any blocked call so the process can exit. */

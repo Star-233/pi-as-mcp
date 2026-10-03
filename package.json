@@ -3,24 +3,32 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "bin": { "pimcp": "bin/pimcp.mjs" },
+  "bin": {
+    "pimcp": "bin/pimcp.mjs"
+  },
   "description": "One-shot MCP bridge: Pi's coding tools + a local human channel, served to a remote agent.",
-  "engines": { "node": ">=22.6" },
+  "engines": {
+    "node": ">=22.6"
+  },
   "scripts": {
     "start": "node src/index.ts",
     "http": "node src/index.ts --http",
     "typecheck": "tsc --noEmit",
-    "test": "node scripts/config-test.mjs && node scripts/probe.mjs && node scripts/http-probe.mjs",
+    "test": "node scripts/config-test.mjs && node scripts/probe.mjs && node scripts/http-probe.mjs && node scripts/ui-probe.mjs && node scripts/ui-render-probe.mjs",
     "prompt": "node scripts/show-prompt.mjs",
+    "vendor-ui": "node scripts/vendor-ui.mjs",
     "accept": "node scripts/acceptance.mjs",
     "link": "npm link"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.0.0",
-    "@modelcontextprotocol/sdk": "^1.20.0"
+    "@modelcontextprotocol/sdk": "^1.20.0",
+    "katex": "^0.19.0",
+    "marked": "^18.0.14"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "jsdom": "^29.1.1",
     "typescript": "^5.9.0"
   }
 }

@@ -16,6 +16,23 @@ export const INSTRUCTIONS_TOOL = "get_instructions";
 const text = (t: string): ContentPart[] => [{ type: "text", text: t }];
 const asJson = (v: unknown): ContentPart[] => text(JSON.stringify(v, null, 2));
 
+/**
+ * A glance at what a tool returned, for the human-facing timeline. Deliberately
+ * short: the full output already went to the agent, and the human only needs to
+ * see whether it worked and roughly what came back.
+ */
+const PREVIEW_CHARS = 600;
+function preview(parts: ContentPart[]): string | undefined {
+  const body = parts
+    .map((p: any) => (p?.type === "text" && typeof p.text === "string" ? p.text : ""))
+    .join("\n")
+    .trim();
+  if (!body) return undefined;
+  return body.length > PREVIEW_CHARS
+    ? `${body.slice(0, PREVIEW_CHARS)}\n… (${body.length - PREVIEW_CHARS} more chars)`
+    : body;
+}
+
 function toolSchema(name: string, description: string, inputSchema: unknown): any {
   return { name, description, inputSchema };
 }
@@ -201,9 +218,10 @@ export function createMcpServer(cfg: Config, piTools: AdaptedTool[], channel: Hu
       return { content: text(`Unknown tool: ${name}`), isError: true };
     }
 
+    const summary = describeCall(name, args);
+
     // Optional human approval gate for the dangerous verbs. Fails closed.
     if (cfg.approve.includes(name)) {
-      const summary = describeCall(name, args);
       const verdict = await withKeepAlive(extra, () =>
         channel.ask(
           `Approve this ${name} call?\n\n${summary}\n\nReply "yes" to allow, anything else to deny.`,
@@ -220,12 +238,20 @@ export function createMcpServer(cfg: Config, piTools: AdaptedTool[], channel: Hu
       }
     }
 
+    // The human sees every call this bridge runs on their machine, not just the
+    // ones that speak through human_say. A tool call that errors still records.
+    const callId = channel.toolStart(name, summary);
+    const started = Date.now();
+
     try {
       const result = await tool.call(args, signal);
+      channel.toolEnd(callId, !result.isError, Date.now() - started, preview(result.content));
       return { content: result.content, isError: result.isError };
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      channel.toolEnd(callId, false, Date.now() - started, message);
       return {
-        content: text(err instanceof Error ? err.message : String(err)),
+        content: text(message),
         isError: true,
       };
     }

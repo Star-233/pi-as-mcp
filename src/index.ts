@@ -20,9 +20,36 @@ const sandbox = new Sandbox(cfg.root, cfg.deny);
 log(`sandbox root: ${cfg.root}`);
 if (cfg.deny.length) log(`denied paths: ${cfg.deny.join(", ")}`);
 
+/**
+ * Facts for the human UI's info panel. Never includes a token value - the panel is
+ * a local page, but "set" is all it needs to say, and a value could end up in a
+ * screenshot or a bug report.
+ */
+const bridgeInfo = () => ({
+  serverName: cfg.serverName,
+  version: "0.1.0",
+  root: cfg.root,
+  tools: pi.tools.map((t) => t.name),
+  approve: cfg.approve,
+  deny: cfg.deny,
+  blockMs: cfg.blockMs,
+  transport: cfg.http ? "http" : "stdio",
+  endpoint: cfg.http ? `http://${cfg.httpHost}:${cfg.httpPort}/mcp` : "stdio",
+  httpTokenSet: Boolean(cfg.httpToken),
+  uiTokenSet: Boolean(cfg.uiToken),
+  pid: process.pid,
+  platform: `${process.platform} ${process.arch}`,
+  node: process.version,
+});
+
 let ui: { url: string; close: () => Promise<void> };
 try {
-  ui = await startWebUI(channel, { host: cfg.uiHost, port: cfg.uiPort, token: cfg.uiToken });
+  ui = await startWebUI(channel, {
+    host: cfg.uiHost,
+    port: cfg.uiPort,
+    token: cfg.uiToken,
+    info: bridgeInfo,
+  });
 } catch (err) {
   const code = (err as NodeJS.ErrnoException)?.code;
   log(

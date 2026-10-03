@@ -4,84 +4,611 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>pi-mcp · human channel</title>
+<link rel="stylesheet" href="vendor/katex.min.css">
 <style>
-  :root { color-scheme: dark; }
+  :root {
+    color-scheme: dark;
+    --bg:#14161a; --panel:#1a1e24; --panel2:#1c2027; --line:#262a31; --line2:#2c313a;
+    --fg:#e6e8eb; --dim:#8b93a1; --dimmer:#6b7280;
+    --blue:#2f6feb; --amber:#f0b429; --green:#3fb950; --red:#f85149; --purple:#a371f7;
+    --sidebar:300px;
+  }
   * { box-sizing: border-box; }
   body { margin:0; font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
-         background:#14161a; color:#e6e8eb; display:flex; flex-direction:column; height:100vh; }
-  header { padding:10px 14px; border-bottom:1px solid #262a31; display:flex; gap:10px; align-items:center; }
+         background:var(--bg); color:var(--fg); display:flex; flex-direction:column; height:100vh; overflow:hidden; }
+  button { font:inherit; cursor:pointer; }
+
+  /* ---------- header ---------- */
+  header { padding:9px 14px; border-bottom:1px solid var(--line); display:flex; gap:10px;
+           align-items:center; flex:0 0 auto; }
   header b { font-weight:600; }
+  header .sub { color:var(--dimmer); }
   #status { margin-left:auto; font-size:12px; padding:3px 9px; border-radius:999px;
-            background:#1e222a; color:#8b93a1; }
-  #status.waiting { background:#3a2f12; color:#f0b429; }
-  #status.live { background:#12291c; color:#3fb950; }
-  #log { flex:1; overflow-y:auto; padding:14px; display:flex; flex-direction:column; gap:10px; }
-  .m { max-width:min(760px,88%); padding:9px 12px; border-radius:10px; white-space:pre-wrap;
+            background:#1e222a; color:var(--dim); white-space:nowrap; }
+  #status.waiting { background:#3a2f12; color:var(--amber); }
+  #status.live { background:#12291c; color:var(--green); }
+  #status.dead { background:#3d1418; color:var(--red); }
+  #countdown { font-variant-numeric:tabular-nums; font-size:12px; padding:3px 9px;
+               border-radius:999px; background:#3a2f12; color:var(--amber); display:none; }
+  #countdown.urgent { background:#3d1418; color:var(--red); }
+  .iconbtn { background:transparent; border:1px solid var(--line2); color:var(--dim);
+             border-radius:7px; padding:3px 9px; font-size:12px; }
+  .iconbtn:hover { color:var(--fg); border-color:#3f6ea8; }
+  .iconbtn.on { color:var(--green); border-color:#2c5e39; }
+
+  /* ---------- body ---------- */
+  #main { flex:1; display:flex; min-height:0; }
+
+  /* ---------- sidebar ---------- */
+  #side { width:var(--sidebar); flex:0 0 var(--sidebar); border-right:1px solid var(--line);
+          background:var(--panel); overflow-y:auto; padding:12px; font-size:12px; }
+  body.noside #side { display:none; }
+  #side h3 { margin:14px 0 6px; font-size:10px; letter-spacing:.08em; text-transform:uppercase;
+             color:var(--dimmer); font-weight:600; }
+  #side h3:first-child { margin-top:0; }
+  .kv { display:flex; gap:8px; padding:2px 0; align-items:baseline; }
+  .kv .k { color:var(--dimmer); flex:0 0 82px; }
+  .kv .v { color:var(--fg); word-break:break-all; font-variant-numeric:tabular-nums; }
+  .kv .v.mono { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:11px; }
+  .chips { display:flex; flex-wrap:wrap; gap:4px; }
+  .chip { background:#232830; border:1px solid var(--line2); border-radius:5px; padding:1px 6px;
+          font-family:ui-monospace,Menlo,Consolas,monospace; font-size:10.5px; color:#b6bdca; }
+  .chip.warn { background:#3a2f12; border-color:#6b5410; color:var(--amber); }
+  .chip.bad { background:#3d1418; border-color:#6e2027; color:var(--red); }
+  .chip.good { background:#12291c; border-color:#1f5130; color:var(--green); }
+  .dot { display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--dimmer);
+         margin-right:5px; vertical-align:1px; }
+  .dot.ok { background:var(--green); }
+  .dot.bad { background:var(--red); }
+  .dot.wait { background:var(--amber); }
+  .note { color:var(--dimmer); line-height:1.45; }
+  .warnbox { margin-top:8px; padding:7px 9px; border-radius:7px; background:#3d1418;
+             border:1px solid #6e2027; color:#ffa198; line-height:1.45; }
+
+  /* ---------- log ---------- */
+  #logwrap { flex:1; display:flex; flex-direction:column; min-width:0; }
+  #toolbar { padding:6px 14px; border-bottom:1px solid var(--line); display:flex; gap:14px;
+             align-items:center; font-size:12px; color:var(--dim); flex:0 0 auto; }
+  #toolbar label { display:flex; gap:5px; align-items:center; cursor:pointer; user-select:none; }
+  #toolbar .spacer { margin-left:auto; }
+  #log { flex:1; overflow-y:auto; padding:14px; display:flex; flex-direction:column; gap:9px; }
+  .empty { color:var(--dimmer); text-align:center; margin:auto; font-size:13px; }
+
+  .m { max-width:min(760px,88%); padding:9px 12px; border-radius:10px;
        word-break:break-word; border:1px solid transparent; }
-  .agent { align-self:flex-start; background:#1c2027; border-color:#262a31; }
-  .human { align-self:flex-end; background:#1f3a5f; border-color:#2b4f7d; }
-  .meta { font-size:11px; color:#7d8593; margin-bottom:3px; }
-  .q { border-color:#f0b429 !important; }
-  footer { border-top:1px solid #262a31; padding:10px; display:flex; gap:8px; }
+  .agent { align-self:flex-start; background:var(--panel2); border-color:var(--line); }
+  .human { align-self:flex-end; background:#1f3a5f; border-color:#2b4f7d; white-space:pre-wrap; }
+  .meta { font-size:11px; color:#7d8593; margin-bottom:3px; display:flex; gap:6px; align-items:center; }
+  .badge { border-radius:4px; padding:0 5px; font-size:10px; letter-spacing:.03em;
+           background:#232830; border:1px solid var(--line2); color:var(--dim); }
+  .badge.question { background:#3a2f12; border-color:#6b5410; color:var(--amber); }
+  .badge.done { background:#12291c; border-color:#1f5130; color:var(--green); }
+  .badge.error { background:#3d1418; border-color:#6e2027; color:var(--red); }
+  .badge.progress { background:#132a44; border-color:#1f4a75; color:#79b8ff; }
+  .badge.note { background:#2a2140; border-color:#4a3a70; color:var(--purple); }
+  .badge.waiting { background:#232830; color:var(--dimmer); }
+  .m.q { border-color:var(--amber) !important; }
+  .m.done { border-left:3px solid var(--green); }
+  .m.error { border-left:3px solid var(--red); }
+  .m.progress, .m.note, .m.waiting { opacity:.92; }
+
+  /* markdown body */
+  .md > :first-child { margin-top:0; }
+  .md > :last-child { margin-bottom:0; }
+  .md p { margin:0 0 8px; white-space:pre-wrap; }
+  .md h1,.md h2,.md h3,.md h4 { margin:12px 0 6px; line-height:1.3; }
+  .md h1 { font-size:17px; } .md h2 { font-size:16px; } .md h3 { font-size:15px; }
+  .md ul,.md ol { margin:0 0 8px; padding-left:22px; }
+  .md li { margin:2px 0; }
+  .md blockquote { margin:0 0 8px; padding:2px 10px; border-left:3px solid var(--line2);
+                   color:var(--dim); }
+  .md code { background:#0f1115; border:1px solid var(--line); border-radius:4px;
+             padding:1px 4px; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+             font-size:12.5px; }
+  .md table { border-collapse:collapse; margin:0 0 8px; font-size:12.5px; }
+  .md th,.md td { border:1px solid var(--line2); padding:3px 8px; }
+  .md hr { border:0; border-top:1px solid var(--line); margin:10px 0; }
+  .md a { color:#79b8ff; }
+  .codebox { position:relative; margin:0 0 8px; }
+  .codebox pre { margin:0; }
+  .codebox .copy { position:absolute; top:4px; right:4px; opacity:0; background:#232830;
+                   border:1px solid var(--line2); color:var(--dim); border-radius:5px;
+                   font-size:10px; padding:1px 6px; }
+  .codebox:hover .copy { opacity:1; }
+  .md pre { background:#0f1115; border:1px solid var(--line); border-radius:7px; padding:9px 11px;
+            overflow-x:auto; }
+  .md pre code { background:none; border:0; padding:0; font-size:12.5px; }
+  .katex { font-size:1.02em; }
+  .katex-display { margin:8px 0; overflow-x:auto; overflow-y:hidden; }
+
+  /* ---------- tool rows ---------- */
+  .tool { align-self:stretch; max-width:100%; font-family:ui-monospace,SFMono-Regular,Menlo,
+          Consolas,monospace; font-size:11.5px; border:1px solid var(--line); border-radius:7px;
+          background:#171a1f; }
+  .tool .row { display:flex; gap:8px; align-items:center; padding:4px 10px; cursor:pointer;
+               min-width:0; }
+  .tool .caret { color:var(--dimmer); flex:0 0 auto; width:9px; }
+  .tool .name { color:#79b8ff; flex:0 0 auto; }
+  .tool .args { color:#9aa3b2; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tool .ms { color:var(--dimmer); flex:0 0 auto; font-variant-numeric:tabular-nums; }
+  .tool .ok { color:var(--green); flex:0 0 auto; }
+  .tool .err { color:var(--red); flex:0 0 auto; }
+  .tool .run { color:var(--amber); flex:0 0 auto; }
+  .tool.running { border-color:#6b5410; }
+  .tool.error { border-color:#6e2027; }
+  .tool .detail { display:none; border-top:1px solid var(--line); padding:8px 10px; margin:0;
+                  white-space:pre-wrap; word-break:break-word; color:#b6bdca; background:#0f1115;
+                  border-radius:0 0 6px 6px; max-height:280px; overflow:auto; font-size:11.5px; }
+  .tool.open .detail { display:block; }
+  body.notools .tool { display:none; }
+
+  /* ---------- footer ---------- */
+  footer { border-top:1px solid var(--line); padding:10px; display:flex; gap:8px; flex:0 0 auto; }
   textarea { flex:1; resize:none; height:44px; padding:11px; border-radius:9px;
-             border:1px solid #2c313a; background:#1a1e24; color:inherit; font:inherit; }
+             border:1px solid var(--line2); background:var(--panel); color:inherit; font:inherit; }
   textarea:focus { outline:none; border-color:#3f6ea8; }
-  button { padding:0 18px; border-radius:9px; border:0; background:#2f6feb; color:#fff;
-           font:inherit; font-weight:600; cursor:pointer; }
-  button:disabled { opacity:.5; cursor:default; }
-  .empty { color:#6b7280; text-align:center; margin:auto; font-size:13px; }
+  #send { padding:0 18px; border-radius:9px; border:0; background:var(--blue); color:#fff;
+          font-weight:600; }
+  #send:disabled { opacity:.5; cursor:default; }
+
+  @media (max-width:900px) { #side { position:absolute; z-index:5; height:100%; } body.noside #side { display:none; } }
+  @media (max-width:640px) { .m { max-width:96%; } }
 </style>
 </head>
-<body>
-<header><b>pi-mcp</b><span style="color:#7d8593">human channel</span><span id="status">connecting…</span></header>
-<div id="log"><div class="empty">No messages yet.</div></div>
+<body class="noside">
+<header>
+  <button class="iconbtn" id="sidebtn" title="Toggle the runtime info panel">☰ info</button>
+  <b>pi-mcp</b><span class="sub">human channel</span>
+  <span id="countdown"></span>
+  <button class="iconbtn" id="bell" title="Notifications and sound">🔕 alerts off</button>
+  <span id="status">connecting…</span>
+</header>
+
+<div id="main">
+  <aside id="side"><div class="note">loading…</div></aside>
+
+  <div id="logwrap">
+    <div id="toolbar">
+      <label><input type="checkbox" id="showtools" checked> tool calls</label>
+      <span id="tally"></span>
+      <span class="spacer"></span>
+      <button class="iconbtn" id="scrollbtn" title="Jump to the latest">↓ latest</button>
+      <button class="iconbtn" id="clearbtn" title="Clear this view (the server keeps its own list)">clear</button>
+    </div>
+    <div id="log"><div class="empty">No messages yet.</div></div>
+  </div>
+</div>
+
 <footer>
   <textarea id="in" placeholder="Type a message…  (Enter to send, Shift+Enter for newline)"></textarea>
   <button id="send">Send</button>
 </footer>
+
+<script src="vendor/marked.umd.js"></script>
+<script src="vendor/katex.min.js"></script>
 <script>
 var qs = new URLSearchParams(location.search);
 var token = qs.get('token') || '';
 var log = document.getElementById('log');
-var status = document.getElementById('status');
+var statusEl = document.getElementById('status');   // not 'status': window.status is a legacy string setter that swallows the assignment
+var countdown = document.getElementById('countdown');
 var input = document.getElementById('in');
 var sendBtn = document.getElementById('send');
-var seen = {};
+var tally = document.getElementById('tally');
+var bell = document.getElementById('bell');
+var byId = {};
+var counts = { agent: 0, human: 0, tool: 0, err: 0 };
+var deadline = null;
+var reconnects = 0;
+var lastStatusKind = null;
 
 function fmt(t) { return new Date(t).toLocaleTimeString(); }
+function esc(s) { return String(s).replace(/[&<>"]/g, function (c) {
+  return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+
+/* ---------------------------------------------------------------- markdown
+ * Agent messages are markdown from a remote model, so they are parsed and then
+ * run through a tag/attribute allowlist. Raw HTML in a message is displayed,
+ * never executed. Without marked the UI falls back to plain text.
+ */
+var ALLOWED_TAGS = { A:1,BR:1,P:1,STRONG:1,B:1,EM:1,I:1,CODE:1,PRE:1,UL:1,OL:1,LI:1,
+  BLOCKQUOTE:1,H1:1,H2:1,H3:1,H4:1,H5:1,H6:1,HR:1,TABLE:1,THEAD:1,TBODY:1,TR:1,
+  TH:1,TD:1,DEL:1,S:1,SUP:1,SUB:1,SPAN:1,DIV:1 };
+var ALLOWED_ATTR = { A:['href','title'], CODE:['class'], SPAN:['class'],
+  TH:['align'], TD:['align'] };
+var DROP_ENTIRELY = /^(SCRIPT|STYLE|IFRAME|OBJECT|EMBED|LINK|META|SVG|FORM)$/i;
+
+function sanitize(el) {
+  var all = el.querySelectorAll('*');
+  for (var i = all.length - 1; i >= 0; i--) {
+    var n = all[i];
+    if (!ALLOWED_TAGS[n.nodeName]) {
+      if (DROP_ENTIRELY.test(n.nodeName)) { n.parentNode && n.parentNode.removeChild(n); continue; }
+      var p = n.parentNode;
+      if (p) { while (n.firstChild) p.insertBefore(n.firstChild, n); p.removeChild(n); }
+      continue;
+    }
+    var ok = ALLOWED_ATTR[n.nodeName] || [];
+    for (var j = n.attributes.length - 1; j >= 0; j--) {
+      if (ok.indexOf(n.attributes[j].name) === -1) n.removeAttribute(n.attributes[j].name);
+    }
+    if (n.nodeName === 'A') {
+      var h = n.getAttribute('href') || '';
+      if (/^(https?:|mailto:|#|\/)/i.test(h)) {
+        n.setAttribute('target', '_blank');
+        n.setAttribute('rel', 'noopener noreferrer');
+      } else {
+        n.removeAttribute('href');
+      }
+    }
+  }
+  return el;
+}
+
+var mdParse = null;
+try {
+  if (window.marked) {
+    if (window.marked.setOptions) window.marked.setOptions({ gfm: true, breaks: true });
+    mdParse = window.marked.parse || window.marked.marked || null;
+  }
+} catch (e) { mdParse = null; }
+
+/* Math is rendered after markdown, skipping code. $$..$$ / \[..\] are display,
+ * $..$ / \(..\) are inline. A bare $5 stays text: a run of digits is not math. */
+var MATH_RE = /(\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|(?<![\\\w$])\$(?!\s)([^$\n]+?)(?<!\s)\$)/g;
+function renderMath(root) {
+  if (!window.katex) return;
+  var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+  var nodes = [], n;
+  while ((n = walker.nextNode())) nodes.push(n);
+  for (var i = 0; i < nodes.length; i++) {
+    var node = nodes[i], p = node.parentNode;
+    if (!p || p.nodeName === 'CODE' || p.nodeName === 'PRE' || p.nodeName === 'SCRIPT') continue;
+    var s = node.nodeValue;
+    if (s.indexOf('$') === -1 && s.indexOf('\\') === -1) continue;
+    MATH_RE.lastIndex = 0;
+    var frag = document.createDocumentFragment(), last = 0, m;
+    while ((m = MATH_RE.exec(s))) {
+      var raw = m[0], tex, display;
+      if (raw.slice(0, 2) === '$$' || raw.slice(0, 2) === '\\[') { tex = raw.slice(2, -2); display = true; }
+      else if (raw.slice(0, 2) === '\\(') { tex = raw.slice(2, -2); display = false; }
+      else { tex = raw.slice(1, -1); display = false; }
+      if (/^[\d\s.,]+$/.test(tex)) continue;
+      if (m.index > last) frag.appendChild(document.createTextNode(s.slice(last, m.index)));
+      var span = document.createElement('span');
+      try { window.katex.render(tex, span, { displayMode: display, throwOnError: false, strict: false }); }
+      catch (e) { span.textContent = raw; }
+      frag.appendChild(span);
+      last = m.index + raw.length;
+    }
+    if (!last) continue;
+    if (last < s.length) frag.appendChild(document.createTextNode(s.slice(last)));
+    p.replaceChild(frag, node);
+  }
+}
+
+function renderMarkdown(host, text) {
+  if (!mdParse) { host.style.whiteSpace = 'pre-wrap'; host.textContent = text; return; }
+  var html;
+  try { html = mdParse(text); } catch (e) { host.style.whiteSpace = 'pre-wrap'; host.textContent = text; return; }
+  var tpl = document.createElement('template');
+  tpl.innerHTML = html;
+  sanitize(tpl.content);
+  var pres = tpl.content.querySelectorAll('pre');
+  for (var i = 0; i < pres.length; i++) {
+    var box = document.createElement('div');
+    box.className = 'codebox';
+    var btn = document.createElement('button');
+    btn.className = 'copy'; btn.textContent = 'copy'; btn.type = 'button';
+    (function (pre, b) {
+      b.onclick = function () {
+        var t = pre.textContent;
+        var done = function () { b.textContent = 'copied'; setTimeout(function () { b.textContent = 'copy'; }, 1200); };
+        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+        else done();
+      };
+    })(pres[i], btn);
+    pres[i].parentNode.insertBefore(box, pres[i]);
+    box.appendChild(pres[i]); box.appendChild(btn);
+  }
+  host.appendChild(tpl.content);
+  host.classList.add('md');
+  renderMath(host);
+}
+
+/* ---------------------------------------------------------------- alerts */
+var alerts = false, audioCtx = null, titleTimer = null;
+function tone(freqs, dur, type) {
+  if (!audioCtx) return;
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  var t0 = audioCtx.currentTime;
+  freqs.forEach(function (f, i) {
+    var osc = audioCtx.createOscillator(), gain = audioCtx.createGain();
+    osc.type = type || 'sine';
+    osc.frequency.value = f;
+    var start = t0 + i * (dur / freqs.length);
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.exponentialRampToValueAtTime(0.12, start + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, start + dur / freqs.length);
+    osc.connect(gain); gain.connect(audioCtx.destination);
+    osc.start(start); osc.stop(start + dur / freqs.length + 0.02);
+  });
+}
+function chime(kind) {
+  if (kind === 'question') tone([660, 880], 0.28, 'sine');
+  else if (kind === 'done') tone([523, 784], 0.24, 'triangle');
+  else if (kind === 'error') tone([196, 147], 0.34, 'sawtooth');
+}
+function flashTitle(text) {
+  if (titleTimer) return;
+  var original = document.title, on = false;
+  titleTimer = setInterval(function () {
+    document.title = (on = !on) ? '(!) ' + text : original;
+  }, 1000);
+  var stop = function () { clearInterval(titleTimer); titleTimer = null; document.title = original; };
+  document.addEventListener('visibilitychange', function once() {
+    if (!document.hidden) { stop(); document.removeEventListener('visibilitychange', once); }
+  });
+}
+function notify(kind, text) {
+  if (!alerts) return;
+  if (document.hidden) flashTitle(text.slice(0, 60).replace(/\s+/g, ' '));
+  chime(kind);
+  if (window.Notification && Notification.permission === 'granted') {
+    try {
+      new Notification('pi-mcp · ' + kind, {
+        body: text.slice(0, 200), tag: 'pi-mcp', renotify: true, requireInteraction: kind === 'question'
+      });
+    } catch (e) { /* not every browser allows the constructor form */ }
+  }
+}
+bell.onclick = function () {
+  if (alerts) {
+    alerts = false; bell.textContent = '🔕 alerts off'; bell.classList.remove('on');
+    localStorage.setItem('pimcp.alerts', '0');
+    return;
+  }
+  var arm = function () {
+    alerts = true; bell.textContent = '🔔 alerts on'; bell.classList.add('on');
+    localStorage.setItem('pimcp.alerts', '1');
+    chime('done');
+  };
+  try { audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {}
+  if (window.Notification && Notification.permission === 'default') {
+    Notification.requestPermission().then(arm, arm);
+  } else { arm(); }
+};
+if (localStorage.getItem('pimcp.alerts') === '1') { bell.textContent = '🔔 tap to enable'; }
+
+/* ---------------------------------------------------------------- entries */
+function nearBottom() { return log.scrollHeight - log.scrollTop - log.clientHeight < 80; }
+function stick(was) { if (was) log.scrollTop = log.scrollHeight; }
+
+function badge(kind) {
+  var b = document.createElement('span');
+  b.className = 'badge ' + kind;
+  b.textContent = kind;
+  return b;
+}
+
+function renderTool(e) {
+  var d = document.createElement('div');
+  d.className = 'tool' + (e.status === 'running' ? ' running' : e.status === 'error' ? ' error' : '');
+  var row = document.createElement('div');
+  row.className = 'row';
+  var caret = document.createElement('span'); caret.className = 'caret'; caret.textContent = '▸';
+  var name = document.createElement('span'); name.className = 'name'; name.textContent = e.tool || 'tool';
+  var args = document.createElement('span'); args.className = 'args';
+  args.textContent = e.text || ''; args.title = e.text || '';
+  var ms = document.createElement('span'); ms.className = 'ms';
+  ms.textContent = typeof e.ms === 'number' ? e.ms + ' ms' : '';
+  var st = document.createElement('span');
+  st.className = e.status === 'running' ? 'run' : e.status === 'error' ? 'err' : 'ok';
+  st.textContent = e.status === 'running' ? '⋯' : e.status === 'error' ? '✗' : '✓';
+  row.appendChild(caret); row.appendChild(name); row.appendChild(args);
+  row.appendChild(ms); row.appendChild(st);
+  var detail = document.createElement('pre');
+  detail.className = 'detail'; detail.textContent = e.detail || '(no output)';
+  d.appendChild(row); d.appendChild(detail);
+  row.onclick = function () {
+    d.classList.toggle('open');
+    caret.textContent = d.classList.contains('open') ? '▾' : '▸';
+  };
+  if (e.status === 'error') d.classList.add('open'), caret.textContent = '▾';
+  return d;
+}
 
 function render(e) {
-  if (seen[e.id]) return;
-  seen[e.id] = 1;
+  if (byId[e.id]) return;
   var empty = log.querySelector('.empty');
-  if (empty) empty.remove();
+  if (empty) empty.parentNode.removeChild(empty);
+  var was = nearBottom();
+
+  if (e.role === 'tool') {
+    counts.tool++;
+    if (e.status === 'error') counts.err++;
+    var t = renderTool(e);
+    byId[e.id] = t;
+    log.appendChild(t);
+    stick(was); updateTally();
+    return;
+  }
+
+  counts[e.role]++;
   var d = document.createElement('div');
-  d.className = 'm ' + e.role + (e.kind === 'question' ? ' q' : '');
+  var kind = e.kind || 'message';
+  d.className = 'm ' + e.role + (kind === 'question' ? ' q' : '') +
+    (kind === 'done' || kind === 'error' ? ' ' + kind : '');
   var meta = document.createElement('div');
   meta.className = 'meta';
-  meta.textContent = (e.role === 'agent' ? 'agent' : 'you') + ' · ' + e.kind + ' · ' + fmt(e.at);
+  var who = document.createElement('span');
+  who.textContent = e.role === 'agent' ? 'agent' : 'you';
+  meta.appendChild(who); meta.appendChild(badge(kind));
+  var time = document.createElement('span');
+  time.textContent = fmt(e.at); time.title = new Date(e.at).toLocaleString();
+  meta.appendChild(time);
   var body = document.createElement('div');
-  body.textContent = e.text;
+  if (e.role === 'agent') renderMarkdown(body, e.text);
+  else { body.style.whiteSpace = 'pre-wrap'; body.textContent = e.text; }
   d.appendChild(meta); d.appendChild(body);
+  byId[e.id] = d;
   log.appendChild(d);
-  log.scrollTop = log.scrollHeight;
+  stick(was); updateTally();
+
+  if (e.role === 'agent' && (kind === 'question' || kind === 'done' || kind === 'error')) notify(kind, e.text);
 }
 
-function setStatus(waiting) {
-  if (waiting) { status.textContent = waiting === 'ask' ? 'waiting for your answer' : 'agent is waiting'; status.className = 'waiting'; }
-  else { status.textContent = 'connected'; status.className = 'live'; }
+function patch(id, p) {
+  var el = byId[id];
+  if (!el || !el.classList.contains('tool')) return;
+  if (p.status === 'error' && el.className.indexOf('error') === -1) { counts.err++; updateTally(); }
+  if (p.status) {
+    el.className = 'tool' + (p.status === 'error' ? ' error' : '') + (el.classList.contains('open') ? ' open' : '');
+    var st = el.querySelector('.row').lastChild;
+    st.className = p.status === 'error' ? 'err' : 'ok';
+    st.textContent = p.status === 'error' ? '✗' : '✓';
+  }
+  if (typeof p.ms === 'number') el.querySelector('.ms').textContent = p.ms + ' ms';
+  if (p.detail) el.querySelector('.detail').textContent = p.detail;
 }
 
-var es = new EventSource('/events?token=' + encodeURIComponent(token));
-es.onmessage = function (ev) {
-  var msg = JSON.parse(ev.data);
-  if (msg.type === 'history') { msg.entries.forEach(render); setStatus(msg.waiting); }
-  else if (msg.type === 'entry') { render(msg.entry); }
-  else if (msg.type === 'state') { setStatus(msg.waiting); }
+function updateTally() {
+  tally.textContent = counts.agent + ' agent · ' + counts.human + ' you · ' +
+    counts.tool + ' tool calls' + (counts.err ? ' (' + counts.err + ' failed)' : '');
+}
+
+/* ---------------------------------------------------------------- status */
+function setStatus(waiting, dead) {
+  lastStatusKind = waiting;
+  if (dead) { statusEl.textContent = 'disconnected'; statusEl.className = 'dead'; }
+  else if (waiting) {
+    statusEl.textContent = waiting === 'ask' ? 'waiting for your answer' : 'agent is waiting';
+    statusEl.className = 'waiting';
+  } else { statusEl.textContent = 'connected'; statusEl.className = 'live'; }
+}
+
+deadline = null;
+setInterval(function () {
+  if (!deadline) { countdown.style.display = 'none'; return; }
+  var left = Math.max(0, Math.round((deadline - Date.now()) / 1000));
+  countdown.style.display = '';
+  countdown.textContent = '⏳ ' + left + 's';
+  countdown.className = left <= 15 ? 'urgent' : '';
+}, 250);
+
+/* ---------------------------------------------------------------- stream */
+var es;
+function connect() {
+  es = new EventSource('/events?token=' + encodeURIComponent(token));
+  es.onopen = function () { setStatus(lastStatusKind, false); };
+  es.onmessage = function (ev) {
+    var msg;
+    try { msg = JSON.parse(ev.data); } catch (e) { return; }
+    if (msg.type === 'history') {
+      msg.entries.forEach(render);
+      deadline = msg.deadline || null;
+      setStatus(msg.waiting, false);
+      updateTally();
+    } else if (msg.type === 'entry') {
+      render(msg.entry);
+    } else if (msg.type === 'entry_update') {
+      patch(msg.id, msg.patch);
+    } else if (msg.type === 'state') {
+      deadline = msg.deadline || null;
+      setStatus(msg.waiting, false);
+    }
+  };
+  es.onerror = function () {
+    statusEl.textContent = 'reconnecting…'; statusEl.className = 'dead';
+    reconnects++; updateSide();
+  };
+}
+connect();
+
+/* ---------------------------------------------------------------- sidebar */
+var info = null;
+function kv(k, v, mono) {
+  return '<div class="kv"><span class="k">' + esc(k) + '</span><span class="v' +
+    (mono ? ' mono' : '') + '">' + v + '</span></div>';
+}
+function chips(list, cls) {
+  if (!list || !list.length) return '<span class="note">none</span>';
+  return '<div class="chips">' + list.map(function (c) {
+    return '<span class="chip ' + (cls || '') + '">' + esc(c) + '</span>'; }).join('') + '</div>';
+}
+function uptime(ms) {
+  var s = Math.floor(ms / 1000), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  return (h ? h + 'h ' : '') + m + 'm ' + (s % 60) + 's';
+}
+function updateSide() {
+  var side = document.getElementById('side');
+  if (!info) { side.innerHTML = '<div class="note">loading…</div>'; return; }
+  var snap = info.channel || {};
+  var noToken = info.transport === 'http' && !info.httpTokenSet;
+  var h = '';
+  h += '<h3>connection</h3>';
+  h += kv('state', '<span class="dot ' + (es && es.readyState === 1 ? 'ok' : 'bad') + '"></span>' +
+    (es && es.readyState === 1 ? 'live' : 'down') + (reconnects ? ' · ' + reconnects + ' reconnects' : ''));
+  h += kv('agent', snap.waiting ? '<span class="dot wait"></span>waiting (' + esc(snap.waiting) + ')'
+    : '<span class="dot ok"></span>working');
+  h += kv('window', snap.deadline ? Math.max(0, Math.round((snap.deadline - Date.now()) / 1000)) + 's left' : '—');
+  h += '<h3>runtime</h3>';
+  h += kv('root', esc(info.root || ''), true);
+  h += kv('transport', esc(info.transport || ''));
+  h += kv('endpoint', esc(info.endpoint || ''), true);
+  h += kv('uptime', snap.startedAt ? uptime(Date.now() - snap.startedAt) : '—');
+  h += kv('pid', String(info.pid || ''));
+  h += kv('node', esc(info.node || '') + ' · ' + esc(info.platform || ''));
+  h += '<h3>tools</h3>' + chips(info.tools);
+  h += '<h3>human approval</h3>' + (info.approve && info.approve.length
+    ? chips(info.approve, 'warn') + '<div class="note" style="margin-top:5px">these calls block on a yes/no in the log</div>'
+    : '<div class="note">none — every call runs immediately</div>');
+  h += '<h3>denied paths</h3>' + chips(info.deny);
+  h += '<h3>limits</h3>';
+  h += kv('wait window', Math.round((info.blockMs || 0) / 1000) + 's');
+  h += kv('history cap', (snap.entries || 0) + ' / 1000 entries');
+  h += '<h3>security</h3>';
+  h += kv('mcp token', info.httpTokenSet ? '<span class="chip good">set</span>'
+    : (info.transport === 'http' ? '<span class="chip bad">not set</span>' : '<span class="chip">n/a (stdio)</span>'));
+  h += kv('ui token', info.uiTokenSet ? '<span class="chip good">set</span>' : '<span class="chip">not set</span>');
+  if (noToken) h += '<div class="warnbox">The MCP port is serving a shell with <b>no token</b>. ' +
+    'Anyone who can reach it can run commands here. Restart with <code>--token</code>.</div>';
+  side.innerHTML = h;
+}
+function loadInfo() {
+  fetch('/info?token=' + encodeURIComponent(token))
+    .then(function (r) { return r.json(); })
+    .then(function (j) { info = j; updateSide(); })
+    .catch(function () { document.getElementById('side').innerHTML =
+      '<div class="note">could not load /info</div>'; });
+}
+loadInfo();
+setInterval(function () {
+  fetch('/health?token=' + encodeURIComponent(token)).catch(function () {});
+  updateSide();
+}, 10000);
+
+/* ---------------------------------------------------------------- chrome */
+var sidebtn = document.getElementById('sidebtn');
+if (localStorage.getItem('pimcp.side') === '1') document.body.classList.remove('noside');
+sidebtn.onclick = function () {
+  document.body.classList.toggle('noside');
+  localStorage.setItem('pimcp.side', document.body.classList.contains('noside') ? '0' : '1');
 };
-es.onerror = function () { status.textContent = 'reconnecting…'; status.className = ''; };
-setStatus(null);
+var showtools = document.getElementById('showtools');
+if (localStorage.getItem('pimcp.tools') === '0') { showtools.checked = false; document.body.classList.add('notools'); }
+showtools.onchange = function () {
+  document.body.classList.toggle('notools', !showtools.checked);
+  localStorage.setItem('pimcp.tools', showtools.checked ? '1' : '0');
+};
+document.getElementById('scrollbtn').onclick = function () { log.scrollTop = log.scrollHeight; };
+document.getElementById('clearbtn').onclick = function () {
+  byId = {}; counts = { agent: 0, human: 0, tool: 0, err: 0 };
+  log.innerHTML = '<div class="empty">View cleared. The server still holds its own list; reload to see it again.</div>';
+  updateTally();
+};
 
+/* ---------------------------------------------------------------- send */
 function send() {
   var text = input.value.trim();
   if (!text) return;
@@ -98,6 +625,7 @@ sendBtn.onclick = send;
 input.addEventListener('keydown', function (e) {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
 });
+updateTally();
 input.focus();
 </script>
 </body>
