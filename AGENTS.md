@@ -148,9 +148,17 @@ port to the internet.
   never by clearing an inline style. `scripts/ui-render-probe.mjs` now asserts the *computed*
   display of every element the page toggles and fails on any `*.style.display = ''` in it. Checking
   `textContent` alone is exactly what let this through the first time.
-- **`ui.html` is read once, at startup.** `startWebUI` does `fs.readFileSync` before listening, so
-  editing the page does nothing to a running bridge. Restart it — and a restart of `pimcp` rotates
-  the quick-tunnel hostname and the token, so a remote agent loses its connection.
+- **`ui.html` is read on every request, so a styling change costs a browser refresh, not a
+  restart.** It used to be `readFileSync` once at startup, which meant a CSS tweak meant restarting
+  the bridge — and restarting `pimcp` rotates the quick-tunnel hostname *and* mints a new token, so
+  a remote agent loses its connection mid-session. The page is served `no-store` for the same
+  reason. `scripts/ui-probe.mjs` proves it by editing the real file, fetching, and restoring.
+  Anything in `src/*.ts` still needs a restart.
+- **One bubble, one look.** Messages carry a `kind` (`message`, `progress`, `done`, `error`, `note`,
+  plus `question`/`waiting` from `human_ask`/`human_wait`) and it still drives the alerts, but it is
+  deliberately *not* rendered: the page used to show a coloured badge and border per kind and it
+  read as noise. "The agent is waiting for you" belongs in the status pill, the countdown and the
+  chime, which are harder to miss than a border buried in the scrollback.
 - **`/events` never closes.** Anything that reads it to completion blocks forever; the first
   version of `ui-probe` did exactly that and had to be killed. Read one frame and abort
   (`firstFrame` in `scripts/ui-probe.mjs`), or collect frames against an `AbortController`.

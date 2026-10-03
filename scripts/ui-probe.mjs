@@ -122,6 +122,8 @@ try {
   const page = await fetch(ui("/"));
   const html = await page.text();
   check("GET / serves the page", page.status === 200 && html.includes("human channel"));
+  check("page is served no-store", String(page.headers.get("cache-control")).includes("no-store"),
+    String(page.headers.get("cache-control")));
   check("page loads vendored marked", html.includes('src="vendor/marked.umd.js"'));
   check("page loads vendored katex", html.includes('src="vendor/katex.min.js"') && html.includes('href="vendor/katex.min.css"'));
   check("page has the info panel", html.includes('id="side"') && html.includes("/info"));
@@ -137,6 +139,22 @@ try {
     check(`GET ${p}`, r.status === 200 && String(r.headers.get("content-type")).startsWith(type) && len > min,
       `${r.status} ${r.headers.get("content-type")} ${len}B`);
   }
+
+  // The page is re-read per request, so a styling tweak needs a refresh, not a
+  // restart of the bridge. This edits the real ui.html and puts it back in a
+  // finally; only a hard kill mid-test could leave the marker behind, and git
+  // status would show it.
+  const pagePath = path.resolve("src/human/ui.html");
+  const pageBefore = fs.readFileSync(pagePath, "utf8");
+  try {
+    fs.writeFileSync(pagePath, pageBefore + "\n<!-- ui-probe hot reload marker -->\n");
+    const edited = await (await fetch(ui("/"))).text();
+    check("page is re-read on every request", edited.includes("ui-probe hot reload marker"));
+  } finally {
+    fs.writeFileSync(pagePath, pageBefore);
+  }
+  const afterEdit = await (await fetch(ui("/"))).text();
+  check("and the restore is picked up too", !afterEdit.includes("ui-probe hot reload marker"));
 
   // Only the encoded forms reach the handler: the URL parser normalises a literal
   // `/vendor/../index.ts` to `/index.ts` before it gets here, which then 404s.

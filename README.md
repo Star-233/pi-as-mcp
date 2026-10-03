@@ -108,8 +108,11 @@ network off.
   They come from a remote model, so the HTML they produce is reduced to a tag allowlist
   before it touches the page: raw HTML is displayed, never executed.
 
-The UI is read once at startup. Editing `ui.html` has no effect on a running bridge —
-restart it.
+- **One bubble style.** Messages carry a category, but it is not printed on them — a chat does
+  not have message types. The category still picks the alert sound.
+
+`ui.html` is read on every request, so changing it costs a browser refresh, not a restart of
+the bridge. Changes to `src/*.ts` still need a restart.
 
 ## Configuration
 

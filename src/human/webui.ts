@@ -67,7 +67,7 @@ function authorized(req: http.IncomingMessage, url: URL, token: string): boolean
 
 /** A single-page surface for the one human in the loop. */
 export function startWebUI(channel: HumanChannel, opts: WebUIOptions) {
-  const html = fs.readFileSync(path.join(import.meta.dirname, "ui.html"), "utf8");
+  const pagePath = path.join(import.meta.dirname, "ui.html");
 
   const server = http.createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
@@ -80,7 +80,19 @@ export function startWebUI(channel: HumanChannel, opts: WebUIOptions) {
     if (vendorFile(req, res, url)) return;
 
     if (req.method === "GET" && url.pathname === "/") {
-      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      // Read per request, not once at startup. The page is the part people
+      // iterate on, and restarting the bridge - which for a remote agent means a
+      // new tunnel hostname and a new token - is not a sane cost for a CSS tweak.
+      // no-store, so a browser refresh really does show the current file.
+      let html: string;
+      try {
+        html = fs.readFileSync(pagePath, "utf8");
+      } catch (err) {
+        res.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
+        res.end(`could not read ${pagePath}: ${err instanceof Error ? err.message : String(err)}`);
+        return;
+      }
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
       res.end(html);
       return;
     }
