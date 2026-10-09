@@ -35,7 +35,7 @@ function check(name, ok, detail = "") {
 
 const INFO = {
   serverName: "pi-mcp", version: "0.1.0", root: "D:\\tmp\\root",
-  tools: ["read", "bash"], approve: [], deny: [".ssh"], blockMs: 90000,
+  tools: ["read", "bash"], approve: [], deny: [".ssh"], blockMs: 90000, human: true,
   transport: "http", endpoint: "http://127.0.0.1:8800/mcp",
   httpTokenSet: true, uiTokenSet: true, pid: 1, platform: "win32 x64", node: "v24.9.0",
   channel: { waiting: null, deadline: null, entries: 0, startedAt: Date.now() },

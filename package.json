@@ -18,6 +18,9 @@
     "prompt": "node scripts/show-prompt.mjs",
     "vendor-ui": "node scripts/vendor-ui.mjs",
     "accept": "node scripts/acceptance.mjs",
+    "package": "node scripts/package.mjs",
+    "package:win": "node scripts/package.mjs --win32-x64",
+    "package:linux": "node scripts/package.mjs --linux-x64",
     "link": "npm link"
   },
   "dependencies": {
@@ -28,6 +31,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "esbuild": "^0.25.10",
     "jsdom": "^29.1.1",
     "typescript": "^5.9.0"
   }

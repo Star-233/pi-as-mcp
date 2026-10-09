@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { connect } from "node:net";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -10,12 +11,38 @@ fs.writeFileSync(path.join(root, "a.txt"), "alpha\n");
 const PORT = 8799, TOKEN = "s3cret-token", UI = 8792;
 const child = spawn(process.execPath,
   ["src/index.ts", "--root", root, "--http", "--port", String(PORT), "--token", TOKEN,
-   "--ui-port", String(UI), "--approve", "bash"],
+   "--ui-port", String(UI), "--human", "--approve", "bash"],
   { stdio: ["ignore", "pipe", "pipe"] });
 const logs = [];
 child.stderr.on("data", (d) => logs.push(d.toString()));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-await sleep(2500);
+
+/**
+ * Wait for the server to actually be listening. A fixed sleep is not enough: the
+ * server imports Pi's tool graph before it binds, and that takes ~12s when the
+ * repository sits on a 9p mount (WSL's /mnt/*), where it takes well under a second
+ * on a native filesystem. Polling the port is correct in both cases.
+ */
+async function waitForPort(port, timeoutMs = 60000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null) {
+      throw new Error(`the server exited early (code ${child.exitCode})`);
+    }
+    const ok = await new Promise((resolve) => {
+      const sock = connect(port, "127.0.0.1");
+      sock.on("error", () => resolve(false));
+      sock.on("connect", () => {
+        sock.destroy();
+        resolve(true);
+      });
+    });
+    if (ok) return;
+    await sleep(200);
+  }
+  throw new Error(`the server never listened on port ${port}\n${logs.join("")}`);
+}
+await waitForPort(PORT);
 
 const ep = "http://127.0.0.1:" + PORT + "/mcp";
 let id = 1;

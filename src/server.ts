@@ -177,8 +177,9 @@ export function createMcpServer(cfg: Config, piTools: AdaptedTool[], channel: Hu
     { capabilities: { tools: {}, prompts: {} }, instructions },
   );
 
-  const byName = new Map<string, AdaptedTool>(piTools.map((t) => [t.name, t]));
-  const humans = humanToolDefs();
+  const byName: Record<string, AdaptedTool> = {};
+  for (const t of piTools) byName[t.name] = t;
+  const humans = cfg.human ? humanToolDefs() : [];
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
@@ -219,6 +220,17 @@ export function createMcpServer(cfg: Config, piTools: AdaptedTool[], channel: Hu
 
     if (name === INSTRUCTIONS_TOOL) return { content: text(instructions) };
 
+    if (name === "human_say" || name === "human_ask" || name === "human_wait") {
+      if (!cfg.human) {
+        return {
+          content: text(
+            `Unknown tool: ${name}. The human channel is off: this bridge was started without --human.`,
+          ),
+          isError: true,
+        };
+      }
+    }
+
     if (name === "human_say") {
       channel.say(String(args.text ?? ""), String(args.kind ?? "message"));
       return { content: asJson({ ok: true, delivered: true }) };
@@ -239,7 +251,7 @@ export function createMcpServer(cfg: Config, piTools: AdaptedTool[], channel: Hu
       return humanResult(res, "human_wait");
     }
 
-    const tool = byName.get(name);
+    const tool = byName[name];
     if (!tool) {
       return { content: text(`Unknown tool: ${name}`), isError: true };
     }
@@ -247,7 +259,18 @@ export function createMcpServer(cfg: Config, piTools: AdaptedTool[], channel: Hu
     const summary = describeCall(name, args);
 
     // Optional human approval gate for the dangerous verbs. Fails closed.
+    // Without --human there is nobody to ask, so the gate cannot fail closed:
+    // refuse at startup rather than silently auto-approving everything.
     if (cfg.approve.includes(name)) {
+      if (!cfg.human) {
+        return {
+          content: text(
+            `${name} requires --approve, but the human channel is off (no --human), so there is ` +
+              "nobody to approve it. Restart with --human to use the approval gate.",
+          ),
+          isError: true,
+        };
+      }
       const verdict = await withKeepAlive(extra, () =>
         channel.ask(
           `Approve this ${name} call?\n\n${summary}\n\nReply "yes" to allow, anything else to deny.`,
@@ -265,16 +288,16 @@ export function createMcpServer(cfg: Config, piTools: AdaptedTool[], channel: Hu
 
     // The human sees every call this bridge runs on their machine, not just the
     // ones that speak through human_say. A tool call that errors still records.
-    const callId = channel.toolStart(name, summary);
+    const callId = cfg.human ? channel.toolStart(name, summary) : null;
     const started = Date.now();
 
     try {
       const result = await tool.call(args, signal);
-      channel.toolEnd(callId, !result.isError, Date.now() - started, preview(result.content));
+      if (callId) channel.toolEnd(callId, !result.isError, Date.now() - started, preview(result.content));
       return { content: result.content, isError: result.isError };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      channel.toolEnd(callId, false, Date.now() - started, message);
+      if (callId) channel.toolEnd(callId, false, Date.now() - started, message);
       return {
         content: text(message),
         isError: true,

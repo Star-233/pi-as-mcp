@@ -8,8 +8,11 @@ fs.mkdirSync(path.join(root, "sub"), { recursive: true });
 fs.writeFileSync(path.join(root, "hello.txt"), "line1\nline2\nline3\n");
 fs.writeFileSync(path.join(root, "sub", "nested.txt"), "nested\n");
 
-const child = spawn(process.execPath, ["src/index.ts", "--root", root, "--ui-port", "8791"],
-  { stdio: ["pipe", "pipe", "pipe"] });
+const child = spawn(
+  process.execPath,
+  ["src/index.ts", "--root", root, "--ui-port", "8791", "--human"],
+  { stdio: ["pipe", "pipe", "pipe"] },
+);
 
 let buf = "";
 const pending = new Map();

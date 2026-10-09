@@ -6,6 +6,8 @@ export type Config = {
   approve: string[];
   deny: string[];
   blockMs: number;
+  /** Expose the human channel (human_say/ask/wait, the web UI, approval gate). Off by default. */
+  human: boolean;
   uiPort: number;
   uiHost: string;
   uiToken: string;
@@ -16,7 +18,12 @@ export type Config = {
   serverName: string;
 };
 
-const DEFAULT_TOOLS = ["read", "write", "edit", "ls", "grep", "find", "bash", "powershell"];
+const DEFAULT_TOOLS =
+  process.platform === "win32"
+    ? ["read", "write", "edit", "ls", "grep", "find", "bash", "powershell"]
+    : // The powershell tool throws on first use anywhere but Windows; advertising it
+      // there only produces a tool call that always fails.
+      ["read", "write", "edit", "ls", "grep", "find", "bash"];
 const DEFAULT_DENY = [".ssh", ".aws", ".gnupg", ".git-credentials", ".netrc", ".config/gcloud"];
 
 function parseFlags(argv: string[]): Record<string, string | boolean> {
@@ -66,6 +73,7 @@ export function loadConfig(argv: string[]): Config {
   const deny = list(str(f.deny, env.PI_MCP_DENY ?? "") || undefined, DEFAULT_DENY);
 
   const http = f.http === true || env.PI_MCP_HTTP === "1" || env.PI_MCP_HTTP === "true";
+  const human = f.human === true || env.PI_MCP_HUMAN === "1" || env.PI_MCP_HUMAN === "true";
 
   return {
     root,
@@ -73,6 +81,7 @@ export function loadConfig(argv: string[]): Config {
     approve,
     deny,
     blockMs: num(str(f["block-ms"], env.PI_MCP_BLOCK_MS ?? ""), 90000),
+    human,
     uiPort: num(str(f["ui-port"], env.PI_MCP_UI_PORT ?? ""), 8790),
     uiHost: str(f["ui-host"], env.PI_MCP_UI_HOST ?? "127.0.0.1"),
     uiToken: str(f["ui-token"], env.PI_MCP_UI_TOKEN ?? ""),

@@ -92,13 +92,17 @@ export function buildPromptSections(cfg: Config, tools: AdaptedTool[]): Record<s
     ? visible.map((t) => `- ${t.name}: ${t.snippet}`).join("\n")
     : "(none)";
 
-  return {
+  const sections: Record<string, string> = {
     preamble: PREAMBLE,
     tools: `${toolsBlock}\n\nIn addition to the tools above, you may have access to other custom tools depending on the project.`,
     rules: buildRules(tools),
-    human: HUMAN_SECTION,
     cwd: cfg.root.replace(/\\/g, "/"),
   };
+  // The <human> section is the entire instruction surface for the human channel.
+  // With the channel off it must vanish, not shrink: a model told about tools it
+  // cannot call will try to call them.
+  if (cfg.human) sections.human = HUMAN_SECTION;
+  return sections;
 }
 
 /** Render exactly the way Pi renders its transcript system message. */

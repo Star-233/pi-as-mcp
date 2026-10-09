@@ -4,3 +4,6 @@ node_modules/
 
 # local scratch from the test probes
 .tmp-*/
+
+# packaging output and the downloaded Node runtimes
+dist/

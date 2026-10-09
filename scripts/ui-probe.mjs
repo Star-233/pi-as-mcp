@@ -9,6 +9,7 @@
  * Usage: node scripts/ui-probe.mjs
  */
 import { spawn } from "node:child_process";
+import { connect } from "node:net";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -20,12 +21,40 @@ fs.writeFileSync(path.join(root, "a.txt"), "alpha\n");
 const PORT = 8800, UI = 8793, TOKEN = "ui-probe-token-0xDEADBEEF";
 const child = spawn(process.execPath,
   ["src/index.ts", "--root", root, "--http", "--port", String(PORT), "--token", TOKEN,
-   "--ui-port", String(UI), "--ui-token", TOKEN],
+   "--ui-port", String(UI), "--ui-token", TOKEN, "--human"],
   { stdio: ["ignore", "pipe", "pipe"] });
 const logs = [];
 child.stderr.on("data", (d) => logs.push(d.toString()));
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Wait for the server to actually be listening. A fixed sleep is not enough: the
+ * server imports Pi's tool graph before it binds, and that takes ~12s when the
+ * repository sits on a 9p mount (WSL's /mnt/*), where it takes well under a second
+ * on a native filesystem. Polling the port is correct in both cases.
+ */
+async function waitForPort(port, timeoutMs = 60000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null) {
+      throw new Error(`the server exited early (code ${child.exitCode})`);
+    }
+    const ok = await new Promise((resolve) => {
+      const sock = connect(port, "127.0.0.1");
+      sock.on("error", () => resolve(false));
+      sock.on("connect", () => {
+        sock.destroy();
+        resolve(true);
+      });
+    });
+    if (ok) return;
+    await sleep(200);
+  }
+  throw new Error(`the server never listened on port ${port}\n${logs.join("")}`);
+}
+await waitForPort(PORT);
+
 const ui = (p) => `http://127.0.0.1:${UI}${p}${p.includes("?") ? "&" : "?"}token=${TOKEN}`;
 const ep = `http://127.0.0.1:${PORT}/mcp`;
 let id = 1;
@@ -116,8 +145,6 @@ const watchdog = setTimeout(() => {
 watchdog.unref?.();
 
 try {
-  await sleep(2500);
-
   // ---- the page and its vendored assets -----------------------------------
   const page = await fetch(ui("/"));
   const html = await page.text();
@@ -159,8 +186,13 @@ try {
   // Only the encoded forms reach the handler: the URL parser normalises a literal
   // `/vendor/../index.ts` to `/index.ts` before it gets here, which then 404s.
   for (const p of ["/vendor/..%2Findex.ts", "/vendor/%2e%2e%2fpackage.json", "/vendor/..%5C..%5Cpackage.json"]) {
-    const r = await fetch(ui(p));
-    check(`traversal blocked: ${p}`, r.status === 403, `got ${r.status}`);
+    const escaped = await fetch(ui(p));
+    // %5C is a backslash: a separator on Windows, an ordinary filename character
+    // elsewhere. Either way nothing outside vendor/ may be served, but the code
+    // differs - 403 for an escaped path, 404 for a file that cannot exist.
+    check(`traversal blocked: ${p}`,
+      escaped.status === 403 || escaped.status === 404,
+      `got ${escaped.status}`);
   }
   const missing = await fetch(ui("/vendor/nope.js"));
   check("missing vendor file 404s", missing.status === 404, `got ${missing.status}`);
@@ -170,7 +202,9 @@ try {
   // ---- /info ---------------------------------------------------------------
   const info = await (await fetch(ui("/info"))).json();
   check("info exposes the sandbox root", info.root === root, info.root);
-  check("info lists the tools", Array.isArray(info.tools) && info.tools.length === 8, String(info.tools?.length));
+  check("info lists the tools",
+    Array.isArray(info.tools) && info.tools.length === (process.platform === "win32" ? 8 : 7),
+    String(info.tools?.length));
   check("info lists the deny list", Array.isArray(info.deny) && info.deny.length === 6);
   check("info reports the wait window", info.blockMs === 90000, String(info.blockMs));
   check("info reports tokens as set, never as values",

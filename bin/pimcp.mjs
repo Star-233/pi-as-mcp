@@ -42,7 +42,11 @@ OPTIONS
   -h, --help           Show this help.
 
 Passed through to the server:
+  --human              Expose the human channel: human_say/ask/wait, the web UI and
+                       the approval gate. Off by default.
+  --no-human           Explicitly keep it off (the default; spelled out for clarity).
   --approve <tools>    Require human approval before these tools run, e.g. bash.
+                       Needs --human.
   --deny <paths>       Extra paths to refuse even inside the root.
   --tools <list>       Expose only this comma-separated subset.
   --block-ms <n>       Max time human_ask/human_wait block (default 90000).
@@ -57,11 +61,14 @@ const PASSTHROUGH_VALUE_FLAGS = new Set([
   "--ui-host",
   "--ui-token",
 ]);
+// Value-less flags the server understands, forwarded verbatim.
+const PASSTHROUGH_BOOL_FLAGS = new Set(["--human"]);
 
 function parseArgs(argv) {
   const opts = {
     tunnel: true,
     open: true,
+    human: false,
     root: process.cwd(),
     token: null,
     port: 8777,
@@ -81,11 +88,16 @@ function parseArgs(argv) {
     else if (arg === "--tunnel") opts.tunnel = true;
     else if (arg === "--no-open") opts.open = false;
     else if (arg === "--open") opts.open = true;
+    else if (arg === "--no-human") opts.human = false;
     else if (arg === "--root") opts.root = path.resolve(next());
     else if (arg === "--token") opts.token = next();
     else if (arg === "--port") opts.port = Number(next());
     else if (arg === "--ui-port") opts.uiPort = Number(next());
     else if (PASSTHROUGH_VALUE_FLAGS.has(arg)) opts.passthrough.push(arg, next());
+    else if (PASSTHROUGH_BOOL_FLAGS.has(arg)) {
+      opts.passthrough.push(arg);
+      opts.human = true;
+    }
     else if (arg.startsWith("--")) opts.passthrough.push(arg);
     else throw new Error(`unknown argument: ${arg}`);
   }
@@ -332,6 +344,16 @@ async function main() {
         ? "LOCALHOST ONLY — the tunnel did not come up"
         : "LOCALHOST ONLY";
 
+    // Without --human there is no UI to open and no human_* tools to explain, so
+    // printing the URL would advertise a page that is not being served.
+    const humanBlock = opts.human
+      ? `
+  Human channel — open this, it is where the agent talks to you:
+      ${uiUrl}
+`
+      : `
+  Human channel: off. Restart with --human for human_say/ask/wait and the web UI.
+`;
     process.stdout.write(rule(`pi-mcp is ready — ${scope}`));
     process.stdout.write(`
   MCP URL to paste into the client:
@@ -339,10 +361,7 @@ async function main() {
 
   Authorization header:
       Bearer ${token}
-
-  Human channel — open this, it is where the agent talks to you:
-      ${uiUrl}
-
+${humanBlock}
   The agent can read and write under:
       ${opts.root}
 `);
@@ -350,7 +369,7 @@ async function main() {
     process.stdout.write(rule("Ctrl-C stops the server and the tunnel"));
     process.stdout.write("\n");
 
-    if (opts.open) openBrowser(uiUrl);
+    if (opts.open && opts.human) openBrowser(uiUrl);
   } catch (e) {
     process.stderr.write(`\n  ${e.message}\n`);
     shutdown(1);

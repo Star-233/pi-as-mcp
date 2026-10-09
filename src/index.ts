@@ -33,6 +33,7 @@ const bridgeInfo = () => ({
   approve: cfg.approve,
   deny: cfg.deny,
   blockMs: cfg.blockMs,
+  human: cfg.human,
   transport: cfg.http ? "http" : "stdio",
   endpoint: cfg.http ? `http://${cfg.httpHost}:${cfg.httpPort}/mcp` : "stdio",
   httpTokenSet: Boolean(cfg.httpToken),
@@ -42,29 +43,53 @@ const bridgeInfo = () => ({
   node: process.version,
 });
 
-let ui: { url: string; close: () => Promise<void> };
-try {
-  ui = await startWebUI(channel, {
-    host: cfg.uiHost,
-    port: cfg.uiPort,
-    token: cfg.uiToken,
-    info: bridgeInfo,
-  });
-} catch (err) {
-  const code = (err as NodeJS.ErrnoException)?.code;
-  log(
-    code === "EADDRINUSE"
-      ? `human UI port ${cfg.uiPort} is already in use. Pick another with --ui-port.`
-      : `could not start the human UI on port ${cfg.uiPort}: ${err}`,
-  );
-  process.exit(1);
+// The human channel is off by default: no UI, no human_* tools, no approval gate.
+// The bridge is then a pure tool surface, which is what a packaged deployment
+// wants; --human turns the whole human story back on.
+let ui: { url: string; close: () => Promise<void> } | null = null;
+if (cfg.human) {
+  try {
+    ui = await startWebUI(channel, {
+      host: cfg.uiHost,
+      port: cfg.uiPort,
+      token: cfg.uiToken,
+      info: bridgeInfo,
+    });
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    log(
+      code === "EADDRINUSE"
+        ? `human UI port ${cfg.uiPort} is already in use. Pick another with --ui-port.`
+        : `could not start the human UI on port ${cfg.uiPort}: ${err}`,
+    );
+    process.exit(1);
+  }
+  log(`human channel: ${ui.url}`);
+} else {
+  log("human channel: off (start with --human to enable)");
 }
-log(`human channel: ${ui.url}`);
 
 const pi = await loadPiTools(cfg.root, cfg.tools, sandbox);
 if (pi.missing.length) log(`warning: unknown tools ignored: ${pi.missing.join(", ")}`);
-log(`tools: ${pi.tools.map((t) => t.name).join(", ")}, human_say, human_ask, human_wait`);
-if (cfg.approve.length) log(`human approval required for: ${cfg.approve.join(", ")}`);
+log(
+  cfg.human
+    ? `tools: ${pi.tools.map((t) => t.name).join(", ")}, human_say, human_ask, human_wait`
+    : `tools: ${pi.tools.map((t) => t.name).join(", ")}`,
+);
+if (cfg.approve.length) {
+  // The approval gate needs somebody to ask. With the human channel off there is
+  // nobody, and "fail closed" must not degrade into "allow everything" - so this
+  // is a hard exit, not a warning.
+  if (!cfg.human) {
+    log(
+      `--approve ${cfg.approve.join(",")} needs the human channel: there would be nobody to ` +
+        "answer the approval prompt, and a gate with no answerer is not a gate. " +
+        "Restart with --human, or drop --approve.",
+    );
+    process.exit(1);
+  }
+  log(`human approval required for: ${cfg.approve.join(", ")}`);
+}
 if (cfg.blockMs > 100000) {
   log(
     `warning: --block-ms ${cfg.blockMs} exceeds Cloudflare's ~100s origin timeout. ` +
@@ -130,7 +155,7 @@ if (cfg.http) {
     } else {
       log("could not start the HTTP listener:", err);
     }
-    await ui.close();
+    await ui?.close();
     process.exit(1);
   }
   log(`MCP over HTTP: http://${cfg.httpHost}:${cfg.httpPort}/mcp`);
@@ -154,7 +179,7 @@ const stop = async () => {
   } catch {
     /* ignore */
   }
-  await ui.close();
+  await ui?.close();
   process.exit(0);
 };
 process.on("SIGINT", stop);
