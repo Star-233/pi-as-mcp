@@ -51,7 +51,7 @@ npm install
 npm link                # puts the `pimcp` command on your PATH — once
 
 cd /path/to/workdir     # the directory the agent should own
-pimcp                   # server + token + public tunnel, prints a paste-ready URL
+pimcp --human           # server + token + public tunnel, prints a paste-ready URL
 ```
 
 `pimcp` roots the server at the **current directory**, picks free ports, mints a bearer
@@ -59,18 +59,31 @@ token, opens a Cloudflare quick tunnel, waits for cloudflared to register with t
 opens the human UI, and prints the MCP URL and token. Ctrl-C stops everything.
 `pimcp --no-tunnel` keeps it on localhost; `pimcp --help` lists the rest.
 
+**The human channel is off unless you pass `--human`.** Without it the bridge is a plain
+tool surface: no web UI, no `human_say`/`human_ask`/`human_wait`, no `<human>` section in
+the prompt, and no approval gate. That is the right shape for handing the bridge to
+somebody who only wants the coding tools, and it is what the packaged build assumes.
+
 Without the wrapper:
 
 ```bash
-# local client (stdio). Human UI comes up on 127.0.0.1:8790 — open it.
+# local client (stdio), tools only
 node src/index.ts --root /path/to/workdir
 
 # remote client (HTTP). Point Arena at the printed URL.
 node src/index.ts --root /path/to/workdir --http --port 8777 --token "$(openssl rand -hex 16)"
+
+# with the human channel and a yes/no gate on shell commands
+node src/index.ts --root /path/to/workdir --human --approve bash
 ```
 
 Node 22.6+ is required: the sources are TypeScript and run directly via Node's type
 stripping. There is no build step.
+
+The default tool list is platform-aware: `powershell` is exposed on Windows only, because
+Pi's PowerShell backend throws `only available on Windows` the moment it is called
+anywhere else. Pass `--tools read,write,edit,ls,grep,find,bash,powershell` to override in
+either direction.
 
 ### Pointing Arena at it
 
@@ -89,7 +102,7 @@ Cloudflare **error 1033 / HTTP 530**, you are pointing at a tunnel from a previo
 
 `http://127.0.0.1:8790` is a single self-contained page — no CDN, no build step, and the
 markdown and LaTeX libraries are vendored in `src/human/vendor/`, so it works with the
-network off.
+network off. **Only started with `--human`**; without that flag the port is never bound.
 
 - **One timeline.** Agent messages, your messages, and every tool call the agent runs on
   this machine, in the order they happened. Tool rows are compact
@@ -132,14 +145,15 @@ Flags take precedence over environment variables.
 | Flag | Env | Default | Meaning |
 |---|---|---|---|
 | `--root` | `PI_MCP_ROOT` | cwd | Sandbox root. Every path argument is confined here. |
-| `--tools` | `PI_MCP_TOOLS` | all 8 | Comma-separated subset to expose. |
-| `--approve` | `PI_MCP_APPROVE` | none | Tools that require human approval, e.g. `bash`. |
+| `--human` | `PI_MCP_HUMAN=1` | off | Expose the human channel: `human_say`/`human_ask`/`human_wait`, the web UI, the `<human>` prompt section, and the approval gate. |
+| `--tools` | `PI_MCP_TOOLS` | 7 on Linux, 8 on Windows | Comma-separated subset to expose. `powershell` is Windows-only. |
+| `--approve` | `PI_MCP_APPROVE` | none | Tools that require human approval, e.g. `bash`. **Needs `--human`**: with no human there is nobody to ask, so the bridge refuses to start instead of auto-approving. |
 | `--deny` | `PI_MCP_DENY` | `.ssh,.aws,.gnupg,.git-credentials,.netrc,.config/gcloud` | Paths refused even inside the root. |
 | `--block-ms` | `PI_MCP_BLOCK_MS` | 90000 | Max time `human_ask`/`human_wait` block before returning `no_message`. |
 | `--http` | `PI_MCP_HTTP=1` | off | Serve Streamable HTTP instead of stdio. |
 | `--port` / `--host` | `PI_MCP_PORT` / `PI_MCP_HOST` | 8777 / 127.0.0.1 | HTTP listener. A port already in use is a hard error, not a silent fallback. |
 | `--token` | `PI_MCP_TOKEN` | none | Bearer token. **Set this if you expose the port.** |
-| `--ui-port` / `--ui-host` | `PI_MCP_UI_PORT` / `PI_MCP_UI_HOST` | 8790 / 127.0.0.1 | Human web UI. |
+| `--ui-port` / `--ui-host` | `PI_MCP_UI_PORT` / `PI_MCP_UI_HOST` | 8790 / 127.0.0.1 | Human web UI. Ignored without `--human`. |
 | `--ui-token` | `PI_MCP_UI_TOKEN` | none | Token for the human UI. |
 
 ## Security
@@ -151,8 +165,10 @@ design, so:
   path arguments, but a shell can still reach anything the process can.
 - **Always set `--token` when using `--http`.** Without it the port is unauthenticated and
   the bridge logs a warning.
-- **Use `--approve bash` (and `powershell`) if you want a gate.** Every shell command then
-  blocks on a yes/no prompt in the human UI. It **fails closed**: no answer means denied.
+- **Use `--human --approve bash` (and `powershell`) if you want a gate.** Every shell command
+  then blocks on a yes/no prompt in the human UI. It **fails closed**: no answer means denied.
+  The gate needs `--human`, because with the human channel off there is nobody to ask — the
+  bridge refuses to start rather than let `--approve` silently mean "allow".
 - **Rotate the token per sitting.** For one-shot use, quick tunnels that change hostname are
   fine — they expire on their own.
 - Tool output (file contents, command output) transits the remote platform and may be logged
@@ -188,6 +204,67 @@ Adapted deliberately:
 - Shell session variables (`PI_SESSION_ID`, `PI_MODEL`, …) are switched off via
   `exposeSessionEnvironment: false`, since there is no session; this also drops the
   guideline telling the model to read them.
+
+## Shipping it to somebody else
+
+`npm run package` produces a self-contained directory that runs on a machine with **no
+Node, no npm, no cloudflared, and no network**:
+
+```bash
+npm run package           # for the machine you are on
+npm run package:win       # dist/win32-x64   — cross-buildable from anywhere
+npm run package:linux     # dist/linux-x64
+```
+
+```
+dist/win32-x64/
+  pimcp.cmd        double-click launcher (Windows)
+  pimcp.sh         launcher (Linux/macOS)
+  pimcp.mjs        the launcher that runs inside the package
+  runtime/         the Node runtime — no npm/npx/corepack
+  bin/             cloudflared, vendored
+  app/
+    index.mjs      the bridge, bundled by esbuild
+    node_modules/  Pi's tool graph, pruned to what the bridge imports
+    ui.html        the human UI page
+    vendor/        marked + KaTeX, vendored
+```
+
+The recipient runs it from the directory the agent should own:
+
+```
+pimcp.cmd                          # Windows: tunnel + localhost, prints both URLs
+./pimcp.sh                         # Linux
+./pimcp.sh --human --approve bash  # with the human channel and a shell gate
+```
+
+Every flag the bridge understands works unchanged. On startup it prints an **MCP URL you
+can paste into your client from anywhere on the internet**, plus the bearer token — that is
+the whole "I run it on my machine, you connect from yours" flow. `--no-tunnel` keeps it on
+localhost.
+
+Four details worth knowing:
+
+- **Pi's tool modules are deliberately not bundled.** `src/pi-tools.ts` imports them from
+  `node_modules` at runtime, so their descriptions and JSON schemas always match the
+  installed version. Bundling them would freeze them into the artifact.
+- **The dependency tree is pruned by hand, not by a bundler.** Pi's own `node_modules`
+  ships SDKs for Anthropic, Google, AWS and protobuf that this bridge never loads. What is
+  kept is the set the tool graph actually imports, in the same locations npm put them —
+  `chalk`, `diff`, `marked`, `typebox` and the `@earendil-works/*` core packages live
+  *inside* Pi's nested `node_modules`, so hoisting them to the top level would break
+  resolution. Verified by running the built artifact, not by guessing.
+- **cloudflared is vendored, so a tunnel needs nothing installed.** It is copied from a
+  local install when there is one (including from inside WSL when cross-building for
+  Linux), and downloaded from the GitHub release otherwise. Without it the package still
+  runs, just without a public URL, and the launcher says so.
+- **Quick tunnels rotate their hostname on every restart.** The URL is printed each time,
+  so re-paste it. For a stable hostname, run a named tunnel or a Zero Trust hostname
+  instead — the bridge only ever needs `http://127.0.0.1:<port>/mcp`.
+
+- **No single-file `.exe`.** A Node SEA would need the tool graph embedded, which is the
+  same 150MB either way and loses the "descriptions cannot drift" property. A directory
+  with a launcher is the honest shape for something that has to load a 143MB package.
 
 ## Tests
 

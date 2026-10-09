@@ -30,11 +30,13 @@ full, including the edits that were uncommitted at the time, at tag `humanchat-f
 | `src/human/channel.ts` | In-memory single-human channel (the whole "session" story). Chat *and* tool-call entries share one ordered list. |
 | `src/human/webui.ts`, `ui.html` | Local human UI (SSE + POST): timeline, runtime info panel, wait countdown, alerts. |
 | `src/human/vendor/` | marked + KaTeX, copied from `node_modules` by `npm run vendor-ui`. Committed; the UI must work with no network. |
-| `scripts/*.mjs` | Probes that drive the real server over real MCP traffic. |
+|`scripts/*.mjs`|Probes that drive the real server over real MCP traffic.|
+|`scripts/package.mjs`|Builds `dist/<platform>-<arch>/`: bundled JS + a pruned Pi tool graph + the UI assets + a Node runtime + cloudflared, so the recipient needs nothing installed.|
+|`bin/pimcp.mjs`|The `pimcp` launcher for a checkout: ports, token, tunnel (cloudflared on PATH), ready check, browser.|
+|`bin/pimcp-packaged.mjs`|The launcher that ships *inside* `dist/`: bundled server + vendored cloudflared, no supervise.mjs, supervises its own child.|
 | `scripts/channel-probe.mjs` | The queue semantics of the human channel: draining, ordering, stamps, the cap, the retraction case. |
 | `scripts/ui-probe.mjs` | Drives the UI's HTTP surface: page, vendored assets, `/info`, `/health`, the SSE stream. Asserts; exits non-zero. |
 | `scripts/ui-render-probe.mjs` | Runs the page's own inline script in jsdom against the vendored libs and asserts what it renders. |
-| `bin/pimcp.mjs` | The `pimcp` launcher: ports, token, tunnel, ready check, browser. |
 | `bin/supervise.mjs` | Parent-death watchdog so children cannot outlive the launcher. |
 
 ## Commands
@@ -49,10 +51,13 @@ npm run typecheck # tsc --noEmit
 npm run vendor-ui # re-copy marked + KaTeX into src/human/vendor
 npm run prompt    # print the ported system prompt
 npm run accept    # human acceptance: drives the real server, you reply in the browser
+npm run package   # build a portable dist/<platform>-<arch>/ (needs network for the Node runtime)
 npm link          # once: puts `pimcp` on PATH (run from anywhere afterwards)
 pimcp             # server + token + tunnel for the current directory
+pimcp --human     # ...and the human channel (off by default)
 
-node src/index.ts --root <dir>                                  # stdio + human UI on :8790
+node src/index.ts --root <dir>                                  # stdio, tools only
+node src/index.ts --root <dir> --human                          # stdio + human UI on :8790
 node src/index.ts --root <dir> --http --port 8777 --token <tok> # for a remote client
 ```
 
@@ -101,6 +106,59 @@ Ask before anything destructive or irreversible — deleting history, force-push
 port to the internet.
 
 ## Gotchas
+
+- **The human channel is off by default.** `--human` (or `PI_MCP_HUMAN=1`) turns on the
+  `human_*` tools, the web UI, the `<human>` prompt section, and the approval gate as one
+  unit — nothing may be half-on, because a model told about a tool it cannot call will call
+  it. Verified over real stdio traffic: without the flag `tools/list` returns no `human_*`
+  entries, the prompt contains no `<human>` section, and `human_say` returns an error
+  naming the missing flag. Consequence for the probes: every script that exercises the
+  channel passes `--human` explicitly.
+- **`--approve` without `--human` is a hard exit, not a warning.** The approval gate's whole
+  value is failing closed, and with no human there is no answerer — so a gate would have to
+  either deny everything or allow everything. Both are wrong, so `src/index.ts` exits with
+  a message instead of picking one.
+- **The default tool list is platform-aware.** Pi's `getPowerShellConfig()` throws
+  `The powershell tool is only available on Windows` on any other platform, but the
+  resolver is lazy, so the tool *defines* fine and only fails when called. Advertising a
+  tool that can never succeed is noise, so `src/config.ts` drops `powershell` from the
+  default list off Windows; `--tools` still wins in both directions.
+- **Do not mark `*.json` external when bundling with esbuild.** ajv (via the MCP SDK) does
+  a dynamic `require("./refs/data.json")`. In ESM that is not supported, and esbuild's CJS
+  interop shim only satisfies it when the JSON is in the bundle. `scripts/package.mjs` marks
+  only `@earendil-works/pi-coding-agent` external, deliberately.
+- **Pi's dependency resolution is nested, and a hand-pruned tree must keep it that way.**
+  `chalk`, `diff`, `marked`, `typebox` and the `@earendil-works/*` core packages are
+  installed *inside* `pi-coding-agent/node_modules`, not at the top level, so a file under
+  `dist/core/tools/` finds them there. Hoisting them to the top level of a packaged tree
+  produces `ERR_MODULE_NOT_FOUND` for a package that is plainly present. Keep
+  `KEEP_PI_NESTED` in `scripts/package.mjs` matching where npm actually put them, and prove
+  it by running the built artifact.
+- **The two Node archives have different layouts.** The Windows zip puts `node.exe` at the
+  archive root beside npm/npx/corepack; the Linux tarball puts `node` under `bin/` with the
+  same companions. `downloadNode` normalizes both to `runtime/<node>` and deletes the
+  toolchain, so the launchers can name one path. This cost three builds to get right.
+- **The packaged launcher lives at the package root, so it must not `..` its way up.**
+  `dist/<platform>/pimcp.mjs` finds `app/`, `runtime/` and `bin/` as siblings; a `..` makes
+  it look in `dist/app/index.mjs`, which does not exist, and every run dies with "this
+  package is incomplete". Verified by running the built artifact from a bare PATH.
+- **The packaged launcher and the checkout launcher are different programs.**
+  `bin/pimcp.mjs` is for the repository: it spawns `src/index.ts` through
+  `bin/supervise.mjs` and needs cloudflared on PATH. `bin/pimcp-packaged.mjs` is what ships
+  in `dist/`: it runs the bundled `app/index.mjs` with the bundled runtime, supervises the
+  child itself (there is no supervise.mjs in a package), and finds cloudflared vendored at
+  `bin/`. Keep them in sync deliberately — the flags, the readiness signal and the
+  `Registered tunnel connection` check are duplicated on purpose, because a package that
+  drifts from the checkout is worse than two files.
+- **cloudflared is vendored from a local install when one exists.** GitHub release
+  downloads are slow from this machine (40MB in >300s, sometimes timing out), so
+  `vendorCloudflared` first looks for a local binary — including *inside WSL* when
+  cross-building the Linux package from Windows, which means copying it out through
+  `wsl cp` because the Windows process cannot see the WSL path.
+- **A packaged bridge can be reached from the internet, so `--token` is not optional in
+  spirit.** The packaged launcher mints one by default and prints it; `--no-tunnel` keeps
+  everything on localhost. The bridge also logs a warning and the UI shows a red banner
+  when the HTTP port has no token.
 
 - **Cloudflare drops a silent origin after ~100s.** That is why the human block cap defaults to
   90s. Raising `--block-ms` past that risks a 524 before the human answers.
