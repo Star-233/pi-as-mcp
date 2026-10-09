@@ -11,7 +11,13 @@
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": false,
     "erasableSyntaxOnly": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "baseUrl": ".",
+    "paths": {
+      "@earendil-works/pi-coding-agent/dist/core/tools/index.js": [
+        "node_modules/@earendil-works/pi-coding-agent/dist/core/tools/index.js"
+      ]
+    }
   },
   "include": ["src/**/*.ts"]
 }

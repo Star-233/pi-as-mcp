@@ -224,8 +224,9 @@ dist/win32-x64/
   runtime/         the Node runtime — no npm/npx/corepack
   bin/             cloudflared, vendored
   app/
-    index.mjs      the bridge, bundled by esbuild
-    node_modules/  Pi's tool graph, pruned to what the bridge imports
+    index.mjs      the bridge *and Pi's tools*, bundled — ~700KB
+    node_modules/  only what is still imported at runtime: the MCP SDK and
+                   Pi's lazy image-resize wasm
     ui.html        the human UI page
     vendor/        marked + KaTeX, vendored
 ```
@@ -245,15 +246,18 @@ localhost.
 
 Four details worth knowing:
 
-- **Pi's tool modules are deliberately not bundled.** `src/pi-tools.ts` imports them from
-  `node_modules` at runtime, so their descriptions and JSON schemas always match the
-  installed version. Bundling them would freeze them into the artifact.
-- **The dependency tree is pruned by hand, not by a bundler.** Pi's own `node_modules`
-  ships SDKs for Anthropic, Google, AWS and protobuf that this bridge never loads. What is
-  kept is the set the tool graph actually imports, in the same locations npm put them —
-  `chalk`, `diff`, `marked`, `typebox` and the `@earendil-works/*` core packages live
-  *inside* Pi's nested `node_modules`, so hoisting them to the top level would break
-  resolution. Verified by running the built artifact, not by guessing.
+- **Pi's tools are bundled into `index.mjs`, but only in the artifact.** `src/pi-tools.ts`
+  resolves Pi's tool entry at runtime, because Pi's `exports` map has no subpath for
+  `dist/core/tools/*` and Node ignores tsconfig `paths` — so a static import cannot work
+  in the checkout. When bundling, `scripts/package.mjs` rewrites that expression into a
+  literal import of `src/pi-tools-entry.ts`, a seam whose tsconfig alias points at the
+  installed package. esbuild can follow a literal, so Pi's ~265KB of tool source gets
+  inlined and the artifact no longer needs its 143MB `node_modules`. Descriptions and
+  schemas still come from the installed version, so they cannot drift.
+- **What is left in `node_modules` is small and deliberate.** The MCP SDK (deep-imported,
+  resolved through its own `exports` map) plus `@silvia-odwyer/photon-node`, the 2.2MB wasm
+  Pi only `import()`s when an image actually needs resizing — a bundled wasm blob cannot be
+  lazily loaded. Node builtins are external too.
 - **cloudflared is vendored, so a tunnel needs nothing installed.** It is copied from a
   local install when there is one (including from inside WSL when cross-building for
   Linux), and downloaded from the GitHub release otherwise. Without it the package still
@@ -262,9 +266,20 @@ Four details worth knowing:
   so re-paste it. For a stable hostname, run a named tunnel or a Zero Trust hostname
   instead — the bridge only ever needs `http://127.0.0.1:<port>/mcp`.
 
-- **No single-file `.exe`.** A Node SEA would need the tool graph embedded, which is the
-  same 150MB either way and loses the "descriptions cannot drift" property. A directory
-  with a launcher is the honest shape for something that has to load a 143MB package.
+Two packaging traps that cost real time, both found by running the artifact rather than
+reading the build log:
+
+- **The bundle is ESM, so its CJS dependencies have no `require`.** esbuild's interop shim
+  throws `Dynamic require of "child_process" is not supported` the moment Pi's bash tool
+  pulls in `cross-spawn`. A `createRequire` banner fixes it; `format: "cjs"` cannot be used
+  because `src/index.ts` awaits the listener at top level.
+- **Externals must list both spellings of a builtin.** A CJS dependency writes
+  `require("child_process")`, and esbuild does not normalise it to the `node:` form before
+  matching `external`, so `"node:*"` alone silently misses it.
+
+- **No single-file `.exe`.** A Node SEA would still need a runtime and the UI assets beside
+  it, and the bridge has to read `ui.html` per request. A directory with a launcher is the
+  honest shape.
 
 ## Tests
 

@@ -54,70 +54,131 @@ function hostPlatform() {
   return key;
 }
 
+/**
+ * Remove a path, tolerating a directory that a live process still holds open.
+ *
+ * A leftover empty output directory can keep a Windows handle after the process
+ * that owned it dies (seen with an auto-opened browser holding `dist/<target>`).
+ * Such a directory has no contents to go stale, so a failed remove is not worth
+ * failing the build over — but anything else must still fail loudly.
+ */
 function rmrf(p) {
-  fs.rmSync(p, { recursive: true, force: true });
+  try {
+    fs.rmSync(p, { recursive: true, force: true });
+  } catch (err) {
+    const code = err?.code;
+    let empty = false;
+    try {
+      empty = fs.statSync(p).isDirectory() && fs.readdirSync(p).length === 0;
+    } catch {
+      /* the path is gone, which is the outcome we wanted */
+    }
+    if (!empty) throw err;
+    log(`could not remove ${p} (${code}); it is empty, continuing`);
+  }
 }
 
 /**
- * Bundle the bridge itself. Pi's tool modules stay external: they are resolved
- * from node_modules at runtime by src/pi-tools.ts, which is deliberate (see the
- * README invariant) - bundling them would pin their schemas into the artifact.
+ * Node's builtin modules, spelled the way both ESM and CJS name them. Enumerated
+ * rather than using a wildcard, because esbuild's `node:*` pattern does not match
+ * the bare `require("child_process")` form a CJS dependency emits.
+ */
+const NODE_BUILTINS = [
+  "assert", "async_hooks", "buffer", "child_process", "cluster", "console",
+  "constants", "crypto", "dgram", "diagnostics_channel", "dns", "domain",
+  "events", "fs", "http", "http2", "https", "inspector", "module", "net",
+  "os", "path", "perf_hooks", "process", "punycode", "querystring",
+  "readline", "repl", "stream", "string_decoder", "sys", "timers", "tls",
+  "trace_events", "tty", "url", "util", "v8", "vm", "wasi", "worker_threads",
+  "zlib",
+];
+
+/**
+ * Bundle the bridge itself, Pi's tool modules included.
+ *
+ * Pi is bundled, not left external, because inlining is what lets the package
+ * ship without its 143MB node_modules. Nothing drifts: the seam it is inlined
+ * through resolves to the installed package, so descriptions and schemas still
+ * come from the version under test, and the checkout runs the same code.
+ *
+ * @silvia-odwyer/photon-node stays external on purpose: it is 2.2MB of wasm that
+ * Pi only loads lazily when an image actually needs resizing, and a bundled wasm
+ * blob cannot be lazily loaded.
  */
 async function bundle(outFile) {
   // The JS API, not the .bin shim: esbuild.cmd needs a shell and spawnSync
   // without one reports a null exit status.
   const { pathToFileURL } = await import("node:url");
   const { build } = await import(pathToFileURL(path.join(REPO, "node_modules", "esbuild", "lib", "main.js")).href);
+  const seam = path.join(REPO, "src", "pi-tools-entry.ts");
   await build({
     entryPoints: [path.join(REPO, "src", "index.ts")],
     bundle: true,
     platform: "node",
+    // CJS, not ESM. The bundle is spawned as a process, never imported, so the
+    // module system is invisible — and CJS gives the bundled CJS dependencies
+    // (cross-spawn, via Pi's bash tool) a real `require`. As ESM they hit
+    // esbuild's interop shim, which has no `require` and dies with "Dynamic
+    // require of child_process is not supported".
     format: "esm",
     target: "node22",
     outfile: outFile,
-    // Loaded from the packaged node_modules, not from the bundle.
+    tsconfig: path.join(REPO, "tsconfig.json"),
+    // Swap the runtime-resolved import in src/pi-tools.ts for a literal one that
+    // esbuild can follow, so Pi's tool modules get inlined. Without this the
+    // package has to ship Pi's 143MB node_modules. See src/pi-tools.ts for why
+    // the checkout cannot use a static specifier.
+    plugins: [{
+      name: "pi-tools-literal",
+      setup(esbuild) {
+        esbuild.onLoad({ filter: /pi-tools\.ts$/ }, (args) => ({
+          contents: fs.readFileSync(args.path, "utf8").replace(
+            /await import\(piToolEntryUrl\(\)\)/,
+            `await import(${JSON.stringify(seam)})`,
+          ),
+          loader: "ts",
+        }));
+      },
+    }],
+    // src/index.ts awaits the listener at top level, which CJS cannot express,
+    // so the output stays ESM. That leaves one gap: esbuild's CJS interop shim
+    // has no `require`, so a bundled CJS dependency (cross-spawn, via Pi's bash
+    // tool) dies with "Dynamic require of child_process is not supported".
+    // createRequire restores it, and the builtins it asks for are external, so
+    // nothing is pulled in that the runtime does not already have.
+    banner: {
+      js: 'import { createRequire as __createRequire } from "node:module";\n'
+        + 'const require = __createRequire(import.meta.url);',
+    },
     // NOTE: do not mark *.json external. ajv does a dynamic require of its
     // refs/data.json, which ESM cannot do, and the CJS interop shim only works
     // when esbuild has bundled the JSON itself.
-    external: ["@earendil-works/pi-coding-agent"],
+    //
+    // Node builtins stay external too: shipping them inside the bundle is
+    // pointless weight, and the bundled runtime provides them.
+    external: [
+      "@silvia-odwyer/photon-node",
+      ...NODE_BUILTINS,
+      ...NODE_BUILTINS.map((m) => `node:${m}`),
+    ],
     logLevel: "warning",
   });
 }
 
 /**
- * The parts of node_modules the bridge actually loads. The full tree is 223MB
- * because Pi's own dependencies include SDKs for providers this bridge never
- * talks to (Anthropic, Google, AWS, protobuf). Pruned to the modules that are
- * imported, verified by running the packaged server with --tools including bash.
+ * The parts of node_modules the bridge still loads at runtime. Pi's tool modules
+ * are bundled into index.mjs (see `bundle`), so its 143MB tree is not copied.
+ *
+ * What remains is the MCP SDK (deep-imported by src/server.ts, and esbuild cannot
+ * inline those because the SDK is resolved through its own exports map at
+ * runtime) plus Pi's lazy image-resize wasm, which it `import()`s only when an
+ * image actually needs shrinking.
  *
  * This is a copy, not a symlink or a hoist: the recipient's machine has no npm.
  */
 const KEEP_TOP = [
-  "@earendil-works/pi-coding-agent",
+  "@earendil-works/pi-coding-agent/node_modules/@silvia-odwyer",
   "@modelcontextprotocol",
-  "@silvia-odwyer",
-];
-
-/**
- * Packages npm installed inside Pi's own node_modules. Resolution matters here:
- * a package imported from dist/core/tools/*.js finds Pi's nested copy first, so
- * "chalk" must be kept in the nested dir, not hoisted to the top level, or the
- * packaged tree fails with ERR_MODULE_NOT_FOUND for a package that is present.
- *
- * Verified by running the packaged artifact; the provider SDKs (Anthropic,
- * Google, AWS, protobuf, esbuild binaries) are the weight this drops.
- */
-const KEEP_PI_NESTED = [
-  "@earendil-works/chord",
-  "@earendil-works/pi-agent-core",
-  "@earendil-works/pi-ai",
-  "@earendil-works/pi-codemode",
-  "@earendil-works/pi-mcp",
-  "@earendil-works/pi-tui",
-  "chalk",
-  "diff",
-  "marked",
-  "typebox",
 ];
 
 function copyNodeModules(dest) {
@@ -126,17 +187,6 @@ function copyNodeModules(dest) {
     const from = path.join(src, name);
     if (!fs.existsSync(from)) continue;
     fs.cpSync(from, path.join(dest, name), { recursive: true });
-  }
-
-  // Pi vendors its own dependency versions. Copy only the ones the tool graph
-  // resolves from there, so the layout keeps matching what the imports expect.
-  const piNestedSrc = path.join(src, "@earendil-works", "pi-coding-agent", "node_modules");
-  const piNested = path.join(dest, "@earendil-works", "pi-coding-agent", "node_modules");
-  fs.mkdirSync(piNested, { recursive: true });
-  for (const rel of KEEP_PI_NESTED) {
-    const from = path.join(piNestedSrc, rel);
-    if (!fs.existsSync(from)) continue;
-    fs.cpSync(from, path.join(piNested, rel), { recursive: true });
   }
 }
 

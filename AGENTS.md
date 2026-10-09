@@ -31,7 +31,8 @@ full, including the edits that were uncommitted at the time, at tag `humanchat-f
 | `src/human/webui.ts`, `ui.html` | Local human UI (SSE + POST): timeline, runtime info panel, wait countdown, alerts. |
 | `src/human/vendor/` | marked + KaTeX, copied from `node_modules` by `npm run vendor-ui`. Committed; the UI must work with no network. |
 |`scripts/*.mjs`|Probes that drive the real server over real MCP traffic.|
-|`scripts/package.mjs`|Builds `dist/<platform>-<arch>/`: bundled JS + a pruned Pi tool graph + the UI assets + a Node runtime + cloudflared, so the recipient needs nothing installed.|
+|`scripts/package.mjs`|Builds `dist/<platform>-<arch>/`: bundled JS (Pi's tools inlined) + the UI assets + a Node runtime + cloudflared, so the recipient needs nothing installed.|
+|`src/pi-tools-entry.ts`|The bundler seam for Pi's tool modules: a literal import the tsconfig alias can resolve, so esbuild inlines them into the artifact.|
 |`bin/pimcp.mjs`|The `pimcp` launcher for a checkout: ports, token, tunnel (cloudflared on PATH), ready check, browser.|
 |`bin/pimcp-packaged.mjs`|The launcher that ships *inside* `dist/`: bundled server + vendored cloudflared, no supervise.mjs, supervises its own child.|
 | `scripts/channel-probe.mjs` | The queue semantics of the human channel: draining, ordering, stamps, the cap, the retraction case. |
@@ -63,10 +64,12 @@ node src/index.ts --root <dir> --http --port 8777 --token <tok> # for a remote c
 
 ## Invariants — do not regress these
 
-1. **Pi's tools are imported, not copied.** `src/pi-tools.ts` resolves the package directory and
+1. **Pi's tools are never vendored by hand.** `src/pi-tools.ts` resolves the installed package and
    deep-imports `dist/core/tools/index.js`. Do not import the package root (it drags in the TUI
-   and native image codecs) and do not vendor the tool files — descriptions and schemas must not
-   drift from the installed version.
+   and native image codecs) and do not copy the tool files into the repository — descriptions and
+   schemas must not drift from the installed version. The *packaged artifact* does inline them,
+   but through `src/pi-tools-entry.ts`, whose alias still points at the installed package, so the
+   artifact is built from the same bytes the checkout runs.
 2. **`buildSystemPrompt` is not exported from Pi.** `src/prompt.ts` reproduces the algorithm:
    preamble raw, every other section as `<name>…</name>`, rules via Pi's own ordering
    (per-tool guidelines in tool order → global guidelines → Pi's two closing rules).
@@ -126,14 +129,29 @@ port to the internet.
 - **Do not mark `*.json` external when bundling with esbuild.** ajv (via the MCP SDK) does
   a dynamic `require("./refs/data.json")`. In ESM that is not supported, and esbuild's CJS
   interop shim only satisfies it when the JSON is in the bundle. `scripts/package.mjs` marks
-  only `@earendil-works/pi-coding-agent` external, deliberately.
-- **Pi's dependency resolution is nested, and a hand-pruned tree must keep it that way.**
-  `chalk`, `diff`, `marked`, `typebox` and the `@earendil-works/*` core packages are
-  installed *inside* `pi-coding-agent/node_modules`, not at the top level, so a file under
-  `dist/core/tools/` finds them there. Hoisting them to the top level of a packaged tree
-  produces `ERR_MODULE_NOT_FOUND` for a package that is plainly present. Keep
-  `KEEP_PI_NESTED` in `scripts/package.mjs` matching where npm actually put them, and prove
-  it by running the built artifact.
+  only `@silvia-odwyer/photon-node` and the Node builtins external, deliberately.
+- **Pi's tool modules cannot be imported statically, so bundling them needs a seam.**
+  Pi's `exports` map has no subpath for `dist/core/tools/*`, so a deep specifier fails with
+  `ERR_PACKAGE_PATH_NOT_EXPORTED` — and Node ignores tsconfig `paths`, so the alias only
+  helps tsc and esbuild. That is why `src/pi-tools.ts` resolves the entry at runtime.
+  esbuild cannot inline a runtime-resolved specifier, so `scripts/package.mjs` rewrites the
+  `await import(piToolEntryUrl())` call into a literal import of `src/pi-tools-entry.ts`,
+  whose tsconfig alias points at the installed package. Two dead ends worth not repeating:
+  `define` does **not** work (esbuild emits `if (true) return "…"` and still leaves the
+  dynamic import), and a `format: "cjs"` bundle is impossible because `src/index.ts`
+  awaits the listener at top level.
+- **Node ignores tsconfig `paths`, so a path alias is not a runtime import.** This is what
+  makes Pi's tools unimportable statically: `paths` satisfies tsc and esbuild, but Node's
+  resolver only honours `exports`, and Pi's map has no subpath for `dist/core/tools/*`. The
+  symptom is `ERR_PACKAGE_PATH_NOT_EXPORTED` at startup with a clean `tsc --noEmit` — which
+  is exactly why it looks like a typecheck bug and is not. Proven by running
+  `node src/index.ts` after the switch.
+- **The ESM bundle has no `require`, and Pi's bash tool needs one.** `cross-spawn` is CJS, so
+  esbuild wraps it and its `require("child_process")` hits the interop shim, which throws
+  `Dynamic require of "child_process" is not supported`. A `createRequire` banner in
+  `scripts/package.mjs` restores it. Externals must list **both** spellings of every
+  builtin: a CJS dependency writes the bare form, and esbuild does not normalise it to
+  `node:` before matching, so `"node:*"` alone silently misses it.
 - **The two Node archives have different layouts.** The Windows zip puts `node.exe` at the
   archive root beside npm/npx/corepack; the Linux tarball puts `node` under `bin/` with the
   same companions. `downloadNode` normalizes both to `runtime/<node>` and deletes the
@@ -150,11 +168,14 @@ port to the internet.
   `bin/`. Keep them in sync deliberately — the flags, the readiness signal and the
   `Registered tunnel connection` check are duplicated on purpose, because a package that
   drifts from the checkout is worse than two files.
-- **cloudflared is vendored from a local install when one exists.** GitHub release
-  downloads are slow from this machine (40MB in >300s, sometimes timing out), so
-  `vendorCloudflared` first looks for a local binary — including *inside WSL* when
-  cross-building the Linux package from Windows, which means copying it out through
-  `wsl cp` because the Windows process cannot see the WSL path.
+- **Vendor the portable cloudflared, not the nearest one.** The official release is
+  statically linked, so it runs anywhere; a Homebrew copy points its ELF interpreter at
+  `/home/linuxbrew/.linuxbrew/lib/ld.so`, which the recipient does not have, and shipping it
+  verbatim makes the binary itself unstartable. `vendorCloudflared` therefore tries the
+  GitHub release first and only falls back to a local install, rewriting the interpreter
+  itself when it is non-standard (no patchelf dependency). Reading the bytes out of WSL
+  goes through `wsl cat`, never `wsl cp` with a Windows path — WSL treats that as a literal
+  filename and mangles the drive colon and spaces into fullwidth characters.
 - **A packaged bridge can be reached from the internet, so `--token` is not optional in
   spirit.** The packaged launcher mints one by default and prints it; `--no-tunnel` keeps
   everything on localhost. The bridge also logs a warning and the UI shows a red banner

@@ -1,5 +1,28 @@
 import type { Sandbox } from "./sandbox.ts";
 
+const PI_PACKAGE = "@earendil-works/pi-coding-agent";
+
+/**
+ * Pi does not export its tool modules from the package root (only via the CLI
+ * entry point, which drags in the TUI and native image codecs), and its `exports`
+ * map has no subpath for `dist/core/tools/*` either — a static
+ * `import "@earendil-works/pi-coding-agent/dist/core/tools/index.js"` fails with
+ * ERR_PACKAGE_PATH_NOT_EXPORTED, and Node ignores tsconfig `paths`. So only a
+ * runtime resolution can work in the checkout.
+ *
+ * The specifier is genuinely runtime-selected, which is why this is not a static
+ * import. For the packaged artifact, scripts/package.mjs rewrites this expression
+ * into a literal import of src/pi-tools-entry.ts — the seam that carries the
+ * tsconfig path alias — so esbuild can follow it and inline Pi's tool modules.
+ * That is what lets the package ship without Pi's 143MB node_modules, while the
+ * checkout keeps loading the installed package. Descriptions and schemas cannot
+ * drift either way.
+ */
+function piToolEntryUrl(): string {
+  const pkgRoot = new URL("../", import.meta.resolve(PI_PACKAGE));
+  return new URL("dist/core/tools/index.js", pkgRoot).href;
+}
+
 export type ContentPart =
   | { type: "text"; text: string }
   | { type: "image"; data: string; mimeType: string };
@@ -14,21 +37,6 @@ export type AdaptedTool = {
   guidelines: string[];
   call(args: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult>;
 };
-
-const PI_PACKAGE = "@earendil-works/pi-coding-agent";
-
-/**
- * Pi does not export its tool modules from the package root (only via the CLI
- * entry point, which drags in the TUI and wasm stack). The `exports` map has no
- * subpath for them either, so resolve the package directory and import the file
- * directly. Only that module graph loads: no TUI, no native image codecs.
- */
-async function importPiToolModule(): Promise<any> {
-  const entry = import.meta.resolve(PI_PACKAGE);
-  const pkgRoot = new URL("../", entry);
-  const url = new URL("dist/core/tools/index.js", pkgRoot);
-  return await import(url.href);
-}
 
 /** Pi returns provider-shaped parts; MCP wants its own. Normalize both shapes. */
 export function normalizeContent(content: unknown): ContentPart[] {
@@ -79,7 +87,9 @@ export async function loadPiTools(
   wanted: string[],
   sandbox: Sandbox,
 ): Promise<PiTools> {
-  const mod = await importPiToolModule();
+  // Runtime-selected specifier (bundled literal vs. checkout resolution); see
+  // piToolEntryUrl for why a static import cannot work here.
+  const mod: Record<string, any> = await import(piToolEntryUrl());
   // Pi exposes PI_SESSION_ID / PI_MODEL to shell commands from the live session.
   // There is no session here, so turn that off: it also drops the prompt
   // guideline that tells the model to read those variables.
