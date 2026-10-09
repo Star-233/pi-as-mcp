@@ -281,6 +281,21 @@ reading the build log:
   it, and the bridge has to read `ui.html` per request. A directory with a launcher is the
   honest shape.
 
+### What actually takes up the space
+
+Measured on the Linux package, and the Windows one differs only in ratio:
+
+| Part | Size | Why |
+|---|---|---|
+| `runtime/node` | **123 MB** | The Node binary itself. Only ~41MB is `.text`; the rest is `.data`, symbols and debug info that `strip` cannot remove. This is the floor for any Node-based artifact. |
+| `bin/cloudflared` | 27–39 MB | A statically linked Go binary, vendored so a tunnel needs nothing installed. |
+| `app/` | 11 MB | `index.mjs` (~700KB, Pi's tools included), the MCP SDK, Pi's lazy wasm, the UI page and its vendored libs. |
+
+`npm`, `npx`, `corepack`, `share/` and `lib/node_modules` are deleted from the runtime: the
+bridge spawns `node` on its own bundle and never runs a package manager. Deleting `bin/`
+alone is not enough — that only removes the launchers, while the 17MB of npm itself lives in
+`lib/node_modules`.
+
 ## Tests
 
 ```bash

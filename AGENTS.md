@@ -156,6 +156,12 @@ port to the internet.
   archive root beside npm/npx/corepack; the Linux tarball puts `node` under `bin/` with the
   same companions. `downloadNode` normalizes both to `runtime/<node>` and deletes the
   toolchain, so the launchers can name one path. This cost three builds to get right.
+- **Deleting `runtime/bin/` does not delete npm.** It removes the launchers; the packages
+  themselves sit in `lib/node_modules` (17MB on Linux, ~53MB on Windows) and `share/` holds
+  man pages. The bridge spawns `node` on its own bundle and never runs a package manager, so
+  `downloadNode` drops all three and then removes `lib/` once it is empty. Leaving them in
+  was the single largest avoidable cost in the package, and nothing in `src/` or the
+  packaged launcher references npm — worth re-checking if that ever changes.
 - **The packaged launcher lives at the package root, so it must not `..` its way up.**
   `dist/<platform>/pimcp.mjs` finds `app/`, `runtime/` and `bin/` as siblings; a `..` makes
   it look in `dist/app/index.mjs`, which does not exist, and every run dies with "this

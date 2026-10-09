@@ -269,8 +269,18 @@ function downloadNode(target, runtimeDir) {
     fs.chmodSync(path.join(dest, exe), 0o755);
     rmrf(path.join(dest, "bin"));
   }
+  // Dropping bin/ removes the npm/npx/corepack launchers, but not the packages
+  // themselves: they live in lib/node_modules and are 17MB the bridge never
+  // touches. It spawns node on its own bundle and has no use for a package
+  // manager. share/ is man pages and docs.
+  rmrf(path.join(dest, "lib", "node_modules"));
+  rmrf(path.join(dest, "share"));
   for (const entry of fs.readdirSync(dest)) {
     if (entry !== exe && entry !== "lib" && entry !== "share") rmrf(path.join(dest, entry));
+  }
+  // lib/ is now empty, and an empty dir in the package is just noise.
+  if (fs.existsSync(path.join(dest, "lib"))) {
+    if (fs.readdirSync(path.join(dest, "lib")).length === 0) rmrf(path.join(dest, "lib"));
   }
   rmrf(work);
 }
