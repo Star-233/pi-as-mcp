@@ -12,7 +12,7 @@ import type { ContentPart } from "./pi-tools.ts";
  * calls return isError, the bridge and every other upstream keep working.
  *
  * Connections live for the life of the process, like everything else here: no
- * persistence, no sessions (AGENTS.md invariant 7). Which upstreams exist and
+ * persistence, no sessions (docs/agents/invariants.md, invariant 7). Which upstreams exist and
  * whether they are enabled is the config file's business; this module only does
  * what it is told, from startup, the file watcher, or the web UI.
  */
