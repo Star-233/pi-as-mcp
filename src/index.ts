@@ -232,7 +232,7 @@ if (cfg.http) {
     // Mounted first, so these two paths win over the SDK's own. The SDK still
     // serves discovery, registration and revocation; see src/oauth-http.ts for why
     // /authorize and /token are not its.
-    mountOAuthEndpoints(app, oauth);
+    mountOAuthEndpoints(app, oauth, log);
     try {
       app.use(
         mcpAuthRouter({

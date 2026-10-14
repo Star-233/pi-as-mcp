@@ -398,6 +398,11 @@ try {
 
   const hostedPending = await get(`${BASE2}/oauth/pending?id=${hostedId}`).then((r) => r.json());
   check("it is waiting for the human", hostedPending.state === "pending", JSON.stringify(hostedPending));
+  // The only account of what a client actually sent: it is on the other end of a
+  // redirect the human never sees, so a failed flow is undiagnosable without this.
+  check("the server logs what the client sent, PKCE included",
+    /oauth: \/authorize from pimcp-probe-client, pkce none, scope "openid email"/.test(hostedLogs.join("")),
+    hostedLogs.join("").split("\n").filter((l) => l.includes("/authorize")).pop()?.trim() ?? "(no line)");
 
   await approve(UI2_BASE, hostedId);
   const hostedStatus = await get(`${BASE2}/oauth/pending?id=${hostedId}`).then((r) => r.json());

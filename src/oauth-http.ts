@@ -69,15 +69,28 @@ function errorRedirect(redirectUri: string, error: string, description: string, 
   return url.href;
 }
 
-function sendError(res: Response, status: number, error: string, description: string): void {
+/**
+ * Every refusal is logged, for the same reason the authorize request is: the client
+ * sees a redirect or a JSON body, the human sees nothing, and without the line the
+ * only machine that could explain the failure says nothing about it.
+ */
+function sendError(
+  log: (...a: unknown[]) => void,
+  res: Response,
+  status: number,
+  error: string,
+  description: string,
+): void {
+  log(`oauth: refused with ${error} (HTTP ${status}): ${description}`);
   res.setHeader("cache-control", "no-store");
   res.status(status).json({ error, error_description: description });
 }
 
 /** An SDK error already carries the OAuth error code; anything else is a server fault. */
-function fail(res: Response, err: unknown, status = 400): void {
+function fail(log: (...a: unknown[]) => void, res: Response, err: unknown, status = 400): void {
   const known = err instanceof OAuthError;
   sendError(
+    log,
     res,
     known ? status : 500,
     known ? err.errorCode : "server_error",
@@ -100,7 +113,7 @@ type Params = Record<string, unknown>;
 const text = (from: Params, key: string): string | undefined =>
   typeof from[key] === "string" ? (from[key] as string) : undefined;
 
-export function mountOAuthEndpoints(app: express.Express, provider: OAuthProvider): void {
+export function mountOAuthEndpoints(app: express.Express, provider: OAuthProvider, log: (...a: unknown[]) => void): void {
   /** The same budgets the SDK router used, so replacing these endpoints changes nothing here. */
   const limit = (max: number, error: string) =>
     rateLimit({
@@ -116,9 +129,17 @@ export function mountOAuthEndpoints(app: express.Express, provider: OAuthProvide
     res.setHeader("cache-control", "no-store");
 
     const clientId = text(p, "client_id");
-    if (!clientId) return sendError(res, 400, "invalid_request", "client_id is required");
+    // Logged before anything is decided, because a client that fails here cannot
+    // be asked what it sent: it is on the other end of a redirect the human never
+    // sees, and this line is the only account of it.
+    log(
+      `oauth: /authorize from ${clientId ?? "(no client_id)"}, ` +
+        `pkce ${text(p, "code_challenge") ? text(p, "code_challenge_method") ?? "?" : "none"}, ` +
+        `scope "${text(p, "scope") ?? ""}", redirect ${text(p, "redirect_uri") ?? "(from registration)"}`,
+    );
+    if (!clientId) return sendError(log, res, 400, "invalid_request", "client_id is required");
     const client = await provider.clientsStore.getClient(clientId);
-    if (!client) return sendError(res, 400, "invalid_client", `Unknown client_id: ${clientId}`);
+    if (!client) return sendError(log, res, 400, "invalid_client", `Unknown client_id: ${clientId}`);
 
     // Past this point the errors belong to the client's redirect URI, so the client
     // can see them. Before it, reporting there would be an open redirect.
@@ -127,6 +148,7 @@ export function mountOAuthEndpoints(app: express.Express, provider: OAuthProvide
     if (requestedRedirect === undefined) {
       if (client.redirect_uris.length !== 1) {
         return sendError(
+          log,
           res,
           400,
           "invalid_request",
@@ -136,7 +158,7 @@ export function mountOAuthEndpoints(app: express.Express, provider: OAuthProvide
       redirectUri = client.redirect_uris[0];
     } else {
       if (!client.redirect_uris.some((registered) => redirectUriMatches(requestedRedirect, registered))) {
-        return sendError(res, 400, "invalid_request", "redirect_uri is not registered for this client");
+        return sendError(log, res, 400, "invalid_request", "redirect_uri is not registered for this client");
       }
       redirectUri = requestedRedirect;
     }
@@ -187,15 +209,15 @@ export function mountOAuthEndpoints(app: express.Express, provider: OAuthProvide
     const clientId = text(body, "client_id") ?? basic?.id;
     const secret = text(body, "client_secret") ?? basic?.secret;
 
-    if (!clientId) return sendError(res, 401, "invalid_client", "client_id is required");
+    if (!clientId) return sendError(log, res, 401, "invalid_client", "client_id is required");
     const client = await provider.clientsStore.getClient(clientId);
-    if (!client) return sendError(res, 401, "invalid_client", `Unknown client_id: ${clientId}`);
+    if (!client) return sendError(log, res, 401, "invalid_client", `Unknown client_id: ${clientId}`);
     // A client with a secret must prove it; one without is public, and its
     // protection is PKCE plus the registered redirect URI.
     if (client.client_secret) {
-      if (!secret) return sendError(res, 401, "invalid_client", "This client must present its client_secret");
+      if (!secret) return sendError(log, res, 401, "invalid_client", "This client must present its client_secret");
       if (!sameSecret(secret, client.client_secret)) {
-        return sendError(res, 401, "invalid_client", "Invalid client_secret");
+        return sendError(log, res, 401, "invalid_client", "Invalid client_secret");
       }
     }
 
@@ -206,20 +228,20 @@ export function mountOAuthEndpoints(app: express.Express, provider: OAuthProvide
       switch (text(body, "grant_type")) {
         case "authorization_code": {
           const code = text(body, "code");
-          if (!code) return sendError(res, 400, "invalid_request", "code is required");
+          if (!code) return sendError(log, res, 400, "invalid_request", "code is required");
           const verifier = text(body, "code_verifier");
           const challenge = await provider.challengeForAuthorizationCode(client, code);
           if (challenge) {
             if (!verifier) {
-              return sendError(res, 400, "invalid_request", "code_verifier is required: this code was issued with PKCE");
+              return sendError(log, res, 400, "invalid_request", "code_verifier is required: this code was issued with PKCE");
             }
             if (!pkceMatches(verifier, challenge)) {
-              return sendError(res, 400, "invalid_grant", "code_verifier does not match the challenge");
+              return sendError(log, res, 400, "invalid_grant", "code_verifier does not match the challenge");
             }
           } else if (!client.client_secret) {
             // Unreachable through /authorize, which refuses to issue such a code;
             // kept because this is the invariant that matters if that ever changes.
-            return sendError(res, 400, "invalid_grant", "This code was issued without PKCE and its client has no secret.");
+            return sendError(log, res, 400, "invalid_grant", "This code was issued without PKCE and its client has no secret.");
           }
           const tokens = await provider.exchangeAuthorizationCode(
             client,
@@ -233,7 +255,7 @@ export function mountOAuthEndpoints(app: express.Express, provider: OAuthProvide
         }
         case "refresh_token": {
           const refreshToken = text(body, "refresh_token");
-          if (!refreshToken) return sendError(res, 400, "invalid_request", "refresh_token is required");
+          if (!refreshToken) return sendError(log, res, 400, "invalid_request", "refresh_token is required");
           const scope = text(body, "scope");
           const tokens = await provider.exchangeRefreshToken(
             client,
@@ -246,6 +268,7 @@ export function mountOAuthEndpoints(app: express.Express, provider: OAuthProvide
         }
         default:
           return sendError(
+            log,
             res,
             400,
             "unsupported_grant_type",
@@ -253,7 +276,7 @@ export function mountOAuthEndpoints(app: express.Express, provider: OAuthProvide
           );
       }
     } catch (err) {
-      fail(res, err);
+      fail(log, res, err);
     }
   };
 
