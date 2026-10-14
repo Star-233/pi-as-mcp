@@ -70,8 +70,10 @@ opens the web UI, and prints the MCP URL and token. Ctrl-C stops everything.
 
 **OAuth is on by default**, so a client that speaks MCP's authorization flow needs nothing
 but the printed URL: it discovers the authorization server, asks for access, and you approve
-it in the UI. A client that cannot do OAuth still has the bearer token. `--no-oauth` removes
-the authorization server entirely.
+it in the UI. The same startup also mints and prints a client id and secret, for a product
+that wants them pasted into it instead (Gemini's "custom connected app"). A client that
+cannot do OAuth still has the bearer token. `--no-oauth` removes the authorization server
+entirely.
 
 **The human channel is off unless you pass `--human`.** Without it the agent gets no
 `human_say`/`human_ask`/`human_wait` and no `<human>` section in the prompt. The UI still
@@ -143,50 +145,69 @@ A spec-shaped MCP client does this without being asked:
 
 ### A client you configure by hand: Gemini's "custom connected app"
 
-A hosted product asks *you* for a client id, a client secret, and — behind a button —
-shows you a redirect URI to allow. Such a client never registers itself and never learns
-that this bridge's scope is called `mcp`, so the bridge has to be told about it up front:
+A hosted product asks *you* for a client id and a client secret, and shows you — behind a
+button, in the same dialog — the redirect URI it will use. Such a client never registers
+itself and never learns that this bridge's scope is called `mcp`.
+
+Plain `pimcp` is enough. It mints a credential pair on every run and prints it:
+
+```
+  Client credentials — paste these into the client's own OAuth settings. The redirect URI
+  is whatever that client tells you it wants; paste it back there, and the first time it
+  asks, the card on the approval page names it and your Allow is what permits it.
+      client id      pimcp-h05-kLnEyqe0
+      client secret  1lrdVL8ehejLeu10VhXx-ADW3xWnwFpVM2Hsy8AjpGY
+```
+
+Paste the id and secret into the dialog (**客户端 ID** / **客户端密钥**) and continue in it.
+You do not have to name the redirect URI in advance, and that is not a shortcut: the product
+tells you the address *after* the bridge is already running, so there was never a moment at
+which it could have been registered. When the client finally asks, it waits as a card on the
+bridge UI like any other request — with the address it named printed on the card, under a
+line that says what your click is about to mean:
+
+> That address was not set up in advance — the client sent it just now, and allowing is
+> what allows it (for this run only).
+
+**Allow** is what permits that address, and the only thing that does. Approving also records
+it for the rest of the run, so the same address is not flagged again — but a *different*
+address from the same client is flagged again, because the permission is per address, not
+per client. A client with **no** secret gets no such path at all: it must use PKCE and one of
+its registered URIs, since its code has nothing else protecting it.
+
+If you would rather have the strict shape — addresses named up front, anything else refused
+outright — name them yourself, and the credentials are then printed beside them:
 
 ```bash
 pimcp --oauth-redirect https://oauth-redirect.googleusercontent.com/r/<your-app>
 ```
 
-It prints, along with everything else:
-
 ```
-  Client credentials — paste these into the client's own OAuth settings, then add the
-  redirect URI it shows you below to that client's allowed list:
       client id      pimcp-ZhySNFlK2i04
       client secret  PAootb1Kkdx75D6ATZxTQoAJ2icfeF3RQzY0xTw-rNM
       redirects to   https://oauth-redirect.googleusercontent.com/r/<your-app>
 ```
 
-Paste the id and secret into the dialog (**客户端 ID** / **客户端密钥**), and make sure
-the URI behind **复制重定向 URI** is the one printed above — the bridge only accepts the
-URIs it was given, and only for that one client. Then continue in the dialog, and approve
-the request on the bridge UI, which `pimcp` opens for you.
-
-Those credentials are minted fresh on every run, because nothing here is persisted. To
-keep a pair across restarts — which is what you want, since the client already holds it —
-pin both:
+Those credentials are minted fresh on every run, because nothing here is persisted. To keep
+a pair across restarts — which is what you want, since the client already holds it — pin
+both, with or without `--oauth-redirect`:
 
 ```bash
-pimcp --oauth-redirect https://…/r/<your-app> \
-      --oauth-client-id pimcp-gemini --oauth-client-secret "$(openssl rand -base64 32)"
+pimcp --oauth-client-id pimcp-gemini --oauth-client-secret "$(openssl rand -base64 32)"
 ```
 
 **What a hand-configured client may do differently**, and why:
 
-- **Skip PKCE.** Its client secret plus an exactly-matched redirect URI is what protects
-  the authorization code — the arrangement RFC 6749 §4.1 described before PKCE existed.
-  A client *without* a secret must use PKCE S256: that is what the MCP specification
-  requires, and it is the only thing protecting its code. A public client that skips PKCE
-  is turned away with `invalid_request`.
+- **Skip PKCE.** Its client secret is what protects the authorization code — the arrangement
+  RFC 6749 §4.1 described before PKCE existed — and the code only goes to its address or to
+  one you approved. A client *without* a secret must use PKCE S256: that is what the MCP
+  specification requires, and it is the only thing protecting its code. A public client that
+  skips PKCE is turned away with `invalid_request`.
 - **Send its secret in the body or as HTTP Basic.** Which of the two a hosted client
   chooses is not this bridge's decision to make.
 
-What it may **not** do: redirect anywhere but its registered URIs, or get a token without
-your click. `--oauth-redirect` replaces the registration step, not the human.
+What it may **not** do: get a token without your click, or get one at all without its
+secret. `--oauth-redirect` replaces the registration step, not the human.
 
 A scope the bridge does not have is **narrowed to `mcp` rather than refused** (RFC 6749
 §3.3 permits issuing less than was requested). A hosted client asks for whatever its own
@@ -282,8 +303,8 @@ table row.
 | `--token` | `PI_AS_MCP_TOKEN` | none | Bearer token. **Set this if you expose the port**, unless you use `--oauth`. |
 | `--oauth` | `PI_AS_MCP_OAUTH=1` | off (**on in `pimcp`**) | Serve an OAuth 2.1 authorization server in front of `/mcp`, and run the UI that approves it. **Needs `--http`.** |
 | `--issuer` | `PI_AS_MCP_ISSUER` | the tunnel hostname, else `http://127.0.0.1:<port>` | The URL clients reach, and the identity the authorization server advertises. Only with `--oauth`. Must be `https`, or a loopback `http` address. |
-| `--oauth-redirect` | `PI_AS_MCP_OAUTH_REDIRECT` | none | Register one pre-configured client allowed to return to these URIs (comma-separated). Its credentials are printed at startup. For a client that will never register itself — Gemini's "custom connected app". Only with `--oauth`. |
-| `--oauth-client-id` / `--oauth-client-secret` | `PI_AS_MCP_OAUTH_CLIENT_ID` / `…_SECRET` | minted per run | Pin that client's credentials so a restart does not invalidate a pair the client already holds. Both together, and only with `--oauth-redirect`. |
+| `--oauth-redirect` | `PI_AS_MCP_OAUTH_REDIRECT` | none | The addresses a hand-configured client may return to (comma-separated), named before it ever asks. **Without this the address is not known in advance**: the first one the client sends is shown on the approval card, and your click is what allows it. Only with `--oauth`. |
+| `--oauth-client-id` / `--oauth-client-secret` | `PI_AS_MCP_OAUTH_CLIENT_ID` / `…_SECRET` | minted per run | Use this credential pair instead of minting one, so a restart does not invalidate a pair a client already holds. Both together, and only with `--oauth`. |
 | `--ui-port` / `--ui-host` | `PI_AS_MCP_UI_PORT` / `PI_AS_MCP_UI_HOST` | 8790 / 127.0.0.1 | The web UI. Runs with `--human` or `--oauth`; ignored without either. |
 | `--ui-token` | `PI_AS_MCP_UI_TOKEN` | none | Token for the UI. **Set it if you bind the UI to anything but loopback** — with `--oauth`, the UI is what can grant access here. |
 
@@ -302,6 +323,12 @@ design, so:
 - **A hand-configured client's secret is a credential you now have to keep.** It is printed
   once per run unless you pin it with `--oauth-client-id`/`--oauth-client-secret`; anyone who
   reads it can ask for access, but still cannot get a token without your click.
+- **Approving an address you were not expecting is the one decision worth slowing down on.**
+  A confidential client's callback address only has to be approved by you once, and the card
+  says so in as many words — but if you did not just start that client, the address on the
+  card is somebody else's, and Allow sends them a code. Their secret is still required to
+  turn it into a token, which is why this is a warning and not a refusal; a client with no
+  secret gets no such path at all.
 - **An OAuth access token is a shell until it expires** (12h, refreshable for 30 days or until
   the process ends). Denying a request that has not been answered yet is the only way to
   refuse — once granted, the way to take it back is to restart the bridge. Keep the run short;
@@ -456,10 +483,13 @@ npm run accept  # end-to-end human acceptance; you reply in the browser
 The probes spawn the real server and assert on real MCP traffic, including that a sandbox
 escape is refused, that an unapproved shell command never runs, and that an authorization
 code cannot be replayed, a wrong PKCE verifier is refused, and a denied request grants
-nothing. `scripts/oauth-probe.mjs` then runs a **second** server configured the way a
-hosted client needs — a pre-registered confidential client, no `--human` — and drives it
-with no PKCE at all, once with the secret in the body and once as HTTP Basic, while checking
-that a public client without PKCE is still refused.
+nothing. `scripts/oauth-probe.mjs` then runs two more servers, because the shape of the
+client decides the shape of the flow. One is a hosted product's "custom connected app" — a
+pre-registered confidential client, no `--human` — driven with no PKCE at all, once with the
+secret in the body and once as HTTP Basic. The other is the default, the shape plain `pimcp`
+produces: credentials printed, no redirect URI known in advance, an address that arrives late
+and is allowed only by the click on its card, and a public client refused outright for the
+same address.
 
 ## Gotchas
 
@@ -507,14 +537,25 @@ that a public client without PKCE is still refused.
   whatever its platform taught it (`openid`, `email`) and cannot learn otherwise; RFC 6749
   §3.3 allows issuing less than requested. What must never happen is granting more, and the
   probe asserts the scope on the *token*, not just on the page.
+- **A redirect URI nobody registered is decided by the human, not by the bridge.** The
+  credentials are printed before any address is known, and a hosted product only shows you
+  its callback address afterwards — so refusing an unregistered address would make that client
+  impossible, and accepting it silently would mean nobody ever looked. It is accepted and
+  printed in full on the same card as Allow/Deny, and only a *confidential* client gets this:
+  without a secret the exact match is all that keeps a code from being delivered elsewhere.
+  Approving records the address for the rest of the run, so a repeat is not flagged again.
 - **Authorization endpoints are rate-limited, and the tunnel sets `X-Forwarded-For`.**
   Express refuses to key the limiter on a header it has not been told to trust, which shows up
   as noise or a 500 that only happens behind the tunnel. `src/index.ts` sets `trust proxy 1`
   for that one hop, and the OAuth probe sends the header so this cannot regress silently.
-- **Packaging from Git Bash picks up the wrong `tar`.** The script extracts the Node archive
-  with `tar -xf <windows path>`; MSYS's GNU tar reads `D:\…` as a remote host and dies with
-  `tar: Cannot connect to D: resolve failed`, while Windows' own `tar.exe` handles it. Run the
-  build with `C:\Windows\System32` ahead of the Git tools on `PATH`, or from PowerShell/cmd.
+- **Packaging used to depend on which shell started it.** Extracting the Node archive goes
+  through `tar`, and Git Bash puts MSYS **GNU** tar first on `PATH` — which reads `D:\…` as a
+  remote host (`Cannot execute remote shell`, then `Cannot connect to D: resolve failed`) and
+  cannot read a `.zip` at all (`This does not look like a tar archive`). PowerShell worked by
+  accident, because `tar` there is Windows' bsdtar. `scripts/package.mjs` now names the
+  extractor (`%SystemRoot%\System32\tar.exe` on Windows) and passes `dist/`-relative paths, so
+  `npm run package` behaves the same in Git Bash, PowerShell and cmd. If you see "does not look
+  like a tar archive" on a zip you know is intact, that is this.
 
 ## History
 

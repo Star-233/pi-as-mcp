@@ -47,19 +47,20 @@ Passed through to the server:
   --no-human           Explicitly keep it off (the default; spelled out for clarity).
   --oauth              Serve an OAuth 2.1 authorization server in front of /mcp, so a
                        client can authorize itself instead of being handed a token.
-                       ON by default; --no-oauth turns it off. Uses a pre-registered
-                       client with --oauth-redirect, and dynamic registration without it.
+                       ON by default; --no-oauth turns it off. A client id and secret
+                       are minted and printed every run, for the client you configure
+                       by hand; a client that registers itself needs neither.
   --no-oauth           Do not run the authorization server (clients then need the token).
   --oauth-redirect <uri>
-                       Register ONE client allowed to return to this URI, and print the
-                       client id and secret to paste into that client's own OAuth
-                       settings. This is how a hosted client (Gemini's "custom connected
-                       app") is added: it will never register itself. Comma-separated for
-                       several URIs. Minted fresh each run unless the two flags below pin it.
+                       Name the ONE address a hand-configured client is allowed to return
+                       to, before it ever asks. Without this the address is not known in
+                       advance (nobody can know it until the client shows it), so the
+                       first request from it is listed on the approval card and allowed
+                       by your own click. Comma-separated for several URIs.
   --oauth-client-id <id>
   --oauth-client-secret <secret>
-                       Pin the credentials above, so a restart does not invalidate a pair
-                       that has already been pasted into a client. Needs --oauth-redirect.
+                       Use this pair instead of minting one, so a restart does not invalidate
+                       credentials that have already been pasted into a client.
   --issuer <url>       The URL clients reach, e.g. https://mcp.example.com. Only with
                        --oauth. Defaults to the quick-tunnel hostname, or to
                        http://127.0.0.1:<port> when there is no tunnel.
@@ -136,12 +137,6 @@ function parseArgs(argv) {
   // cannot leave an --oauth behind that the server would then have to reject.
   if (opts.human) opts.passthrough.push("--human");
   if (opts.clientId || opts.clientSecret) {
-    if (!opts.oauthRedirects.length) {
-      throw new Error(
-        "--oauth-client-id/--oauth-client-secret name the client that --oauth-redirect registers, " +
-          "so they need --oauth-redirect too.",
-      );
-    }
     if (!opts.clientId || !opts.clientSecret) {
       throw new Error(
         "--oauth-client-id and --oauth-client-secret have to be given together: pinning one and " +
@@ -149,16 +144,24 @@ function parseArgs(argv) {
       );
     }
   }
+  // A flag that cannot do anything is a mistake, not a no-op - the same rule the
+  // server applies. Without this the redirect URIs would simply never be forwarded.
+  if (!opts.oauth && (opts.oauthRedirects.length || opts.clientId || opts.clientSecret)) {
+    throw new Error(
+      "--oauth-redirect/--oauth-client-id/--oauth-client-secret describe the authorization " +
+        "server's client, so they need --oauth (--no-oauth turns it off).",
+    );
+  }
   if (opts.oauth) {
     opts.passthrough.push("--oauth");
-    if (opts.oauthRedirects.length) {
-      opts.passthrough.push("--oauth-redirect", opts.oauthRedirects.join(","));
-      // Minted here rather than in the server, because this process prints the
-      // banner the human copies from - the same reason it mints the bearer token.
-      opts.clientId = opts.clientId || `pimcp-${randomBytes(9).toString("base64url")}`;
-      opts.clientSecret = opts.clientSecret || randomBytes(32).toString("base64url");
-      opts.passthrough.push("--oauth-client-id", opts.clientId, "--oauth-client-secret", opts.clientSecret);
-    }
+    if (opts.oauthRedirects.length) opts.passthrough.push("--oauth-redirect", opts.oauthRedirects.join(","));
+    // Minted here rather than in the server, because this process prints the banner
+    // the human copies from - the same reason it mints the bearer token. Always, not
+    // only when a redirect URI was named: the pair is what you paste into the client
+    // *before* it can tell you which address it wants to come back to.
+    opts.clientId = opts.clientId || `pimcp-${randomBytes(9).toString("base64url")}`;
+    opts.clientSecret = opts.clientSecret || randomBytes(32).toString("base64url");
+    opts.passthrough.push("--oauth-client-id", opts.clientId, "--oauth-client-secret", opts.clientSecret);
   }
   return opts;
 }
@@ -457,16 +460,26 @@ async function main() {
       ? new URL(issuer ?? `http://127.0.0.1:${port}`).href
       : null;
     // A client that registers itself needs none of this. One configured by hand needs
-    // all of it, and this is the only copy that exists, so it is printed in full.
-    const clientBlock = opts.oauth && opts.oauthRedirects.length
-      ? `
-  Client credentials — paste these into the client's own OAuth settings, then add the
-  redirect URI it shows you below to that client's allowed list:
+    // all of it, and this is the only copy that exists, so it is printed in full -
+    // always, because it is what you paste into the client before you can know which
+    // address that client will want to be sent back to.
+    const clientBlock = !opts.oauth
+      ? ""
+      : opts.oauthRedirects.length
+        ? `
+  Client credentials — paste these into the client's own OAuth settings:
       client id      ${opts.clientId}
       client secret  ${opts.clientSecret}
+  It may only return to the address you already named:
       redirects to   ${opts.oauthRedirects.join("\n                     ")}
 `
-      : "";
+        : `
+  Client credentials — paste these into the client's own OAuth settings. The redirect URI
+  is whatever that client tells you it wants; paste it back there, and the first time it
+  asks, the card on the approval page names it and your Allow is what permits it.
+      client id      ${opts.clientId}
+      client secret  ${opts.clientSecret}
+`;
     const oauthBlock = opts.oauth
       ? `
   OAuth is on. A client that speaks it needs only the URL above, and you approve it

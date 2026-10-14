@@ -270,6 +270,8 @@ const ENTRIES = [
   check("the card names the client", card?.textContent.includes("Arena agent"), card?.textContent.slice(0, 60));
   check("the card says where it would redirect", card?.textContent.includes("https://client.example/callback"));
   check("the card says what approving means", /shell on this computer/.test(card?.textContent ?? ""));
+  check("a registered address is not flagged as new",
+    !card?.textContent.includes("not set up in advance"), card?.textContent.slice(0, 90));
   check("a hostile client name is text, not markup",
     approvals.querySelectorAll("img").length === 0 && w.__pwned === undefined);
   check("the request raised the alert", notifyLog.includes("question"), notifyLog.join(","));
@@ -284,6 +286,29 @@ const ENTRIES = [
   check("the decision carries the request id and says yes",
     JSON.parse(decision?.init.body ?? "{}").id === "auth-1" &&
       JSON.parse(decision?.init.body ?? "{}").allow === true, decision?.init.body);
+
+  /* An address the client named just now, which nothing here checked against
+   * anything. The human reading the card is the only check, so the card has to say
+   * so - this is the one case where approving grants more than was configured.
+   */
+  es.push({
+    type: "authorizations",
+    pending: [{
+      id: "auth-2",
+      clientName: "Configured by hand",
+      redirectUri: "https://oauth-redirect.example.com/r/bridge",
+      unregisteredRedirect: true,
+      scopes: ["mcp"],
+      createdAt: Date.now(),
+      expiresAt: Date.now() + 600000,
+    }],
+  });
+  await new Promise((r) => setTimeout(r, 30));
+  const freshCard = approvals.querySelector(".auth");
+  check("a card for an address nobody configured says so",
+    freshCard?.textContent.includes("not set up in advance"), freshCard?.textContent.slice(0, 120));
+  check("and it still offers both answers",
+    Boolean(freshCard?.querySelector(".allow")) && Boolean(freshCard?.querySelector(".deny")));
 
   es.push({ type: "authorizations", pending: [] });
   await new Promise((r) => setTimeout(r, 30));

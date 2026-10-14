@@ -57,18 +57,20 @@ Passed through to the bridge:
                        and the approval gate. Off by default.
   --oauth              Serve an OAuth 2.1 authorization server in front of /mcp,
                        so a client can authorize itself instead of being handed a
-                       token. ON by default; --no-oauth turns it off.
+                       token. ON by default; --no-oauth turns it off. A client id and
+                       secret are minted and printed every run, for the client you
+                       configure by hand; one that registers itself needs neither.
   --no-oauth           Do not run the authorization server.
   --oauth-redirect <uri>
-                       Register ONE client allowed to return to this URI, and print
-                       the client id and secret to paste into that client's own OAuth
-                       settings. This is how a hosted client (Gemini's "custom
-                       connected app") is added: it never registers itself.
-                       Comma-separated for several URIs.
+                       Name the ONE address a hand-configured client is allowed to
+                       return to, before it ever asks. Without this the address is not
+                       known in advance (nobody can know it until the client shows
+                       it), so the first request from it is listed on the approval
+                       card and allowed by your own click. Comma-separated for several.
   --oauth-client-id <id>
   --oauth-client-secret <secret>
-                       Pin those credentials, so a restart does not invalidate a pair
-                       already pasted into a client. Needs --oauth-redirect.
+                       Use this pair instead of minting one, so a restart does not
+                       invalidate credentials already pasted into a client.
   --issuer <url>       The URL clients reach, e.g. https://mcp.example.com. Only
                        with --oauth. Defaults to the quick-tunnel hostname.
   --approve <tools>    Require human approval before these tools run, e.g. bash.
@@ -127,12 +129,6 @@ function parseArgs(argv) {
   // cannot leave an --oauth behind that the bridge would then have to reject.
   if (opts.human) opts.passthrough.push("--human");
   if (opts.clientId || opts.clientSecret) {
-    if (!opts.oauthRedirects.length) {
-      throw new Error(
-        "--oauth-client-id/--oauth-client-secret name the client that --oauth-redirect registers, " +
-          "so they need --oauth-redirect too.",
-      );
-    }
     if (!opts.clientId || !opts.clientSecret) {
       throw new Error(
         "--oauth-client-id and --oauth-client-secret have to be given together: pinning one and " +
@@ -140,14 +136,22 @@ function parseArgs(argv) {
       );
     }
   }
+  // A flag that cannot do anything is a mistake, not a no-op - the same rule the
+  // bridge applies. Without this the redirect URIs would simply never be forwarded.
+  if (!opts.oauth && (opts.oauthRedirects.length || opts.clientId || opts.clientSecret)) {
+    throw new Error(
+      "--oauth-redirect/--oauth-client-id/--oauth-client-secret describe the authorization " +
+        "server's client, so they need --oauth (--no-oauth turns it off).",
+    );
+  }
   if (opts.oauth) {
     opts.passthrough.push("--oauth");
-    if (opts.oauthRedirects.length) {
-      opts.passthrough.push("--oauth-redirect", opts.oauthRedirects.join(","));
-      opts.clientId = opts.clientId || `pimcp-${randomBytes(9).toString("base64url")}`;
-      opts.clientSecret = opts.clientSecret || randomBytes(32).toString("base64url");
-      opts.passthrough.push("--oauth-client-id", opts.clientId, "--oauth-client-secret", opts.clientSecret);
-    }
+    if (opts.oauthRedirects.length) opts.passthrough.push("--oauth-redirect", opts.oauthRedirects.join(","));
+    // Always, not only when a redirect URI was named: the pair is what you paste into
+    // the client *before* it can tell you which address it wants to come back to.
+    opts.clientId = opts.clientId || `pimcp-${randomBytes(9).toString("base64url")}`;
+    opts.clientSecret = opts.clientSecret || randomBytes(32).toString("base64url");
+    opts.passthrough.push("--oauth-client-id", opts.clientId, "--oauth-client-secret", opts.clientSecret);
   }
   return opts;
 }
@@ -408,10 +412,13 @@ async function main() {
       ? new URL(issuer ?? `http://127.0.0.1:${port}`).href
       : null;
     // A client that registers itself needs none of this; one configured by hand needs
-    // all of it, and this is the only copy that exists, so it is printed in full.
-    const clientBlock = opts.oauth && opts.oauthRedirects.length
-      ? `\n  Client credentials — paste these into the client's own OAuth settings, then add the\n  redirect URI it shows you below to that client's allowed list:\n      client id      ${opts.clientId}\n      client secret  ${opts.clientSecret}\n      redirects to   ${opts.oauthRedirects.join("\n                     ")}\n`
-      : "";
+    // all of it, and this is the only copy that exists, so it is printed in full - always,
+    // because it is what you paste in before the client can tell you its redirect URI.
+    const clientBlock = !opts.oauth
+      ? ""
+      : opts.oauthRedirects.length
+        ? `\n  Client credentials — paste these into the client's own OAuth settings:\n      client id      ${opts.clientId}\n      client secret  ${opts.clientSecret}\n  It may only return to the address you already named:\n      redirects to   ${opts.oauthRedirects.join("\n                     ")}\n`
+        : `\n  Client credentials — paste these into the client's own OAuth settings. The redirect URI\n  is whatever that client tells you it wants; paste it back there, and the first time it\n  asks, the card on the approval page names it and your Allow is what permits it.\n      client id      ${opts.clientId}\n      client secret  ${opts.clientSecret}\n`;
     const oauthBlock = opts.oauth
       ? `\n  OAuth is on. A client that speaks it needs only the URL above, and you approve it\n  in the human UI. Anything else can use the bearer token instead.\n      issuer: ${advertisedIssuer}\n${clientBlock}`
       : `\n  OAuth is off, so the client pastes the bearer token above. To let a client authorize\n  itself instead — nothing to copy, you approve it by hand — restart with these and\n  nothing else:\n      --oauth\n`;

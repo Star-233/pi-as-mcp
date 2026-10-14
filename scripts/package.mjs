@@ -34,6 +34,16 @@ const NODE_TARGETS = {
   "win32-x64": { file: `node-v${NODE_VERSION}-win-x64.zip`, exe: "node.exe" },
   "linux-x64": { file: `node-v${NODE_VERSION}-linux-x64.tar.xz`, exe: "node" },
 };
+/**
+ * The Windows system tar, by full path, rather than whatever `tar` resolves to.
+ *
+ * A Windows .zip needs bsdtar, and Git Bash puts GNU tar first on PATH - which cannot
+ * read a zip at all ("This does not look like a tar archive"). `%SystemRoot%` has held
+ * bsdtar since Windows 10 1803. On every other platform `tar` is the right one already.
+ */
+const TAR = process.platform === "win32"
+  ? path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe")
+  : "tar";
 
 function log(...a) {
   process.stdout.write(`[package] ${a.join(" ")}\n`);
@@ -253,10 +263,17 @@ function downloadNode(target, runtimeDir) {
   const work = path.join(DIST, ".node-extract");
   rmrf(work);
   fs.mkdirSync(work, { recursive: true });
+  // Run from DIST and name both paths relative to it, because `tar` may be MSYS tar
+  // (Git Bash puts it first on PATH) and that one parses `D:\dist\node.zip` - or even
+  // `D:/dist/node.zip` - as the *remote* `D:dist/node.zip`, then fails with "Cannot
+  // execute remote shell" / "Cannot connect to D: resolve failed". MSYS_NO_PATHCONV
+  // does not help, because it is not path conversion but tar's own argument parsing,
+  // and a path with no colon in it is the one spelling it cannot misread.
+  const inDist = (p) => path.relative(DIST, p) || ".";
   if (t.file.endsWith(".zip")) {
-    run("tar", ["-xf", tmp, "-C", work]);
+    run(TAR, ["-xf", inDist(tmp), "-C", inDist(work)], { cwd: DIST });
   } else {
-    run("tar", ["-xJf", tmp, "-C", work]);
+    run(TAR, ["-xJf", inDist(tmp), "-C", inDist(work)], { cwd: DIST });
   }
   const inner = fs.readdirSync(work).find((d) => d.startsWith(`node-v${NODE_VERSION}`));
   if (!inner) fail("could not find the extracted node directory");

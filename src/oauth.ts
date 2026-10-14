@@ -41,7 +41,17 @@ export const SCOPE = "mcp";
 export type StaticClient = {
   clientId: string;
   clientSecret: string;
+  /** Where it is allowed to send the human back. May be empty; see `learnRedirects`. */
   redirectUris: string[];
+  /**
+   * Whether a redirect URI this client was never configured with may be established
+   * by the human approving it. This is on unless the operator named URIs up front, and
+   * it has to be settled somewhere: nobody can know a hosted client's redirect URI
+   * until the client itself shows it to them, so the choice is between a client that
+   * cannot finish and a human deciding on the spot. Setting `redirectUris` is how the
+   * operator says they want the strict shape instead.
+   */
+  learnRedirects: boolean;
 };
 
 /** Length-safe: timingSafeEqual throws on different lengths, which would itself leak. */
@@ -73,6 +83,13 @@ const MAX_PENDING = 8;
  */
 const RESULT_GRACE_MS = 60 * 1000;
 
+/**
+ * How many redirect URIs one client may accumulate this way. The set lives as long
+ * as the process, and every entry arrived over the internet from a client nobody
+ * registered, so it is not allowed to grow without a bound.
+ */
+const MAX_LEARNED_REDIRECTS = 5;
+
 export type Consent = "allowed" | "denied";
 
 /** What the human UI is shown when a client asks for access. */
@@ -82,6 +99,12 @@ export type PendingAuthorization = {
   /** From the client's own registration, so untrusted: render as text, never as HTML. */
   clientName: string;
   redirectUri: string;
+  /**
+   * True when that address was never configured for this client, so approving is
+   * what allows it. The card has to say so - the human is being asked to decide
+   * something they were not told in advance.
+   */
+  unregisteredRedirect: boolean;
   scopes: string[];
   createdAt: number;
   expiresAt: number;
@@ -105,6 +128,15 @@ type ConsentRequest = PendingAuthorization & {
   decision: Consent | null;
   /** Minted on approval, then handed to the browser that is waiting on the poll. */
   code: string | null;
+};
+
+type AuthorizeParams = AuthorizationParams & {
+  /**
+   * The client asked to be sent to an address it was never configured with, and this
+   * bridge decided not to refuse it outright. `src/oauth-http.ts` is where that
+   * decision is made, because it is also where the refusal would be written.
+   */
+  unregisteredRedirect?: boolean;
 };
 
 type AuthorizationCode = {
@@ -144,6 +176,8 @@ export class OAuthProvider implements OAuthServerProvider {
   private readonly access = new Map<string, StoredToken>();
   private readonly refresh = new Map<string, StoredToken>();
   private readonly listeners = new Set<(e: OAuthEvent) => void>();
+  /** Client ids allowed to have a redirect URI established by the human's click. */
+  private readonly mayLearn = new Set<string>();
   /** Where the human approves, named on the consent page. */
   private readonly uiUrl: string;
 
@@ -162,7 +196,34 @@ export class OAuthProvider implements OAuthServerProvider {
         response_types: ["code"],
         token_endpoint_auth_method: "client_secret_post",
       });
+      if (opts.staticClient.learnRedirects) this.mayLearn.add(opts.staticClient.clientId);
     }
+  }
+
+  /**
+   * Whether this client may be sent to an address it was never configured with,
+   * if the human says yes to that address on the card. False for every client
+   * that registered itself - it named its redirect URIs, so there is something to
+   * check against - and false for a hand-configured one whose operator listed the
+   * addresses up front.
+   */
+  mayLearnRedirect(clientId: string): boolean {
+    if (!this.mayLearn.has(clientId)) return false;
+    const client = this.clients.get(clientId);
+    return client !== undefined && client.redirect_uris.length < MAX_LEARNED_REDIRECTS;
+  }
+
+  /**
+   * Called only from `decide()` on approval, so nothing enters the client's list of
+   * redirect URIs without a human having read that address and said yes to it. The
+   * point is that the *next* request from this address is an ordinary one: the
+   * warning on the consent page is shown when the address is new, not forever.
+   */
+  private learnRedirect(clientId: string, uri: string): void {
+    const client = this.clients.get(clientId);
+    if (!client || !this.mayLearn.has(clientId)) return;
+    if (client.redirect_uris.length >= MAX_LEARNED_REDIRECTS) return;
+    client.redirect_uris = [...client.redirect_uris, uri];
   }
 
   get clientsStore(): OAuthRegisteredClientsStore {
@@ -213,6 +274,7 @@ export class OAuthProvider implements OAuthServerProvider {
         clientId: c.clientId,
         clientName: c.clientName,
         redirectUri: c.redirectUri,
+        unregisteredRedirect: c.unregisteredRedirect,
         scopes: c.scopes,
         createdAt: c.createdAt,
         expiresAt: c.expiresAt,
@@ -242,6 +304,7 @@ export class OAuthProvider implements OAuthServerProvider {
         resource: req.resource,
         expiresAt: Date.now() + CODE_TTL_MS,
       });
+      if (req.unregisteredRedirect) this.learnRedirect(req.clientId, req.redirectUri);
     }
     this.emit();
     return true;
@@ -292,8 +355,13 @@ export class OAuthProvider implements OAuthServerProvider {
    * (`openid`, say) without having been told what this bridge offers. Narrowing
    * can only ever grant less than was requested, and the consent page says when
    * that happened.
+   *
+   * The same page also carries the redirect URI, unchecked, when the client named
+   * one this bridge was never told about - see `StaticClient.learnRedirects`. That
+   * one is *not* a permission of this server's to give either: the human reads the
+   * address on the card, and `decide()` records it only if they said yes.
    */
-  async authorize(client: OAuthClientInformationFull, params: AuthorizationParams, res: Response): Promise<void> {
+  async authorize(client: OAuthClientInformationFull, params: AuthorizeParams, res: Response): Promise<void> {
     const requested = params.scopes ?? [];
     if (this.pending().length >= MAX_PENDING) {
       throw new TemporarilyUnavailableError(
@@ -307,6 +375,7 @@ export class OAuthProvider implements OAuthServerProvider {
       clientId: client.client_id,
       clientName: client.client_name?.trim() || client.client_id,
       redirectUri: params.redirectUri,
+      unregisteredRedirect: params.unregisteredRedirect === true,
       scopes: this.scopes,
       requestedScopes: requested.filter((s) => !this.scopes.includes(s)),
       createdAt: now,
@@ -457,6 +526,15 @@ function consentPage(req: ConsentRequest, uiUrl: string): string {
     ? `<p class="state">It also asked for <code>${esc(req.requestedScopes.join(" "))}</code>, which
        this bridge does not have and will not grant.</p>`
     : "";
+  // The address above was not chosen by the person reading this page, and nothing
+  // was checked against it: it arrived with the request. Saying so is the whole
+  // reason this paragraph exists - the alternative is a client that silently cannot
+  // work because nobody ever named its redirect URI in advance.
+  const unregistered = req.unregisteredRedirect
+    ? `<p class="warn">That address was <strong>not</strong> set up in advance &mdash; the client sent it
+       just now. Approving is what allows it, and only for this run. If you are not expecting a
+       client to be handed a code there, deny this.</p>`
+    : "";
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -479,6 +557,7 @@ function consentPage(req: ConsentRequest, uiUrl: string): string {
   code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85em; }
   .where { background: #f2f6ff; border: 1px solid #d6e2ff; border-radius: 8px; padding: .75rem .9rem; }
   .where a { overflow-wrap: anywhere; }
+  .warn { background: #fff8e6; border: 1px solid #f0d9a0; border-radius: 8px; padding: .75rem .9rem; }
   .state { margin: 1.25rem 0 0; padding-top: 1rem; border-top: 1px solid #eceef2;
            color: #6b7280; font-variant-numeric: tabular-nums; }
   @media (prefers-color-scheme: dark) {
@@ -486,6 +565,7 @@ function consentPage(req: ConsentRequest, uiUrl: string): string {
     main { background: #1e2126; border-color: #2f343b; }
     dt, .state { color: #9aa0a8; }
     .where { background: #1b2432; border-color: #2b3a55; }
+    .warn { background: #2b2416; border-color: #5c4a1f; }
     .state { border-top-color: #2f343b; }
   }
 </style>
@@ -501,6 +581,7 @@ function consentPage(req: ConsentRequest, uiUrl: string): string {
     <dt>Redirects to</dt><dd>${esc(req.redirectUri)}</dd>
     <dt>Scope</dt><dd>${esc(req.scopes.join(" "))}</dd>
   </dl>
+${unregistered}
   <p class="where">Approve or deny it on your own machine, at
      <a href="${esc(uiUrl)}">${esc(uiUrl)}</a>. This page cannot approve anything itself, and no one
      else can reach that one.</p>

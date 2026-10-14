@@ -38,7 +38,7 @@ full, including the edits that were uncommitted at the time, at tag `humanchat-f
 | `src/server.ts` | MCP server: tool list, human tools, approval gate. |
 | `src/sandbox.ts` | Path containment + deny list. |
 | `src/oauth.ts` | The OAuth 2.1 authorization server's storage and its one human decision: clients, consent requests, codes, tokens. |
-| `src/oauth-http.ts` | `/authorize` and `/token`, written here instead of taken from the SDK router: PKCE required only from a public client, and the secret accepted in the body or as HTTP Basic. Mounted before `mcpAuthRouter`, so it shadows those two paths in it. |
+| `src/oauth-http.ts` | `/authorize` and `/token`, written here instead of taken from the SDK router: PKCE required only from a public client, the secret accepted in the body or as HTTP Basic, and a redirect URI the client was never configured with accepted for a confidential client (the human's click decides it). Mounted before `mcpAuthRouter`, so it shadows those two paths in it. |
 | `src/human/channel.ts` | In-memory single-human channel (the whole "session" story). Chat *and* tool-call entries share one ordered list. |
 | `src/human/webui.ts`, `ui.html` | The web UI (SSE + POST): timeline, runtime info panel, wait countdown, alerts, the **Allow/Deny cards** that are the only way to grant an authorization — and, when `--human` is off, the same page as an approval console with no composer. |
 | `src/human/vendor/` | marked + KaTeX, copied from `node_modules` by `npm run vendor-ui`. Committed; the UI must work with no network. |
@@ -49,7 +49,7 @@ full, including the edits that were uncommitted at the time, at tag `humanchat-f
 |`bin/pimcp-packaged.mjs`|The launcher that ships *inside* `dist/`: bundled server + vendored cloudflared, no supervise.mjs, supervises its own child.|
 | `scripts/channel-probe.mjs` | The queue semantics of the human channel: draining, ordering, stamps, the cap, the retraction case. |
 | `scripts/http-probe.mjs` | The HTTP surface and the approval gate over real traffic. |
-| `scripts/oauth-probe.mjs` | The whole authorization flow, including the negatives: a replayed code, a wrong PKCE verifier, a denial, a forged decision, an untrusted client name. |
+| `scripts/oauth-probe.mjs` | The whole authorization flow, including the negatives: a replayed code, a wrong PKCE verifier, a denial, a forged decision, an untrusted client name. Runs three servers, because the shape of the client decides the shape of the flow: the spec-shaped one, a hosted "custom connected app" with no PKCE, and the default one where the redirect URI arrives late. |
 | `scripts/ui-probe.mjs` | Drives the UI's HTTP surface: page, vendored assets, `/info`, `/health`, the SSE stream. Asserts; exits non-zero. |
 | `scripts/ui-render-probe.mjs` | Runs the page's own inline script in jsdom against the vendored libs and asserts what it renders, authorization cards included. |
 | `bin/supervise.mjs` | Parent-death watchdog so children cannot outlive the launcher. |
@@ -71,8 +71,9 @@ npm link          # once: puts `pimcp` on PATH (run from anywhere afterwards)
 pimcp
 pimcp --human          # ...and the human channel (off by default)
 pimcp --oauth-redirect https://oauth-redirect.googleusercontent.com/r/<app>
-                       # register a client that will never register itself; prints its
-                       # credentials to paste into it (Gemini's "custom connected app")
+                       # (optional) name the one address a hand-configured client may return
+                       # to before it asks. Without it that address arrives with the first
+                       # request and is allowed by the human's click on the card.
 
 node src/index.ts --root <dir>                                  # stdio, tools only
 node src/index.ts --root <dir> --human                          # stdio + human UI on :8790
@@ -128,6 +129,20 @@ environment variables use the `PI_AS_MCP_` prefix.
 12. **`src/oauth-http.ts` shadows the SDK's `/authorize` and `/token`, so nothing in it may
     call `next()`.** It is mounted first on purpose, and a `next()` would fall through to the
     SDK handler with half-parsed state.
+13. **An unregistered redirect URI is decided by the human, and only for a client that has a
+    secret.** The credentials are printed before any address is known — that is the point,
+    since a hosted product shows you its callback address only afterwards — so refusing one
+    makes such a client impossible and accepting it silently means nobody ever looked. It is
+    accepted *and printed on the card*, and `OAuthProvider.decide()` records it only when the
+    human allows it. Never extend this to a public client: with no secret, the exact match is
+    the only thing keeping its code from being delivered elsewhere. Both halves are asserted in
+    `scripts/oauth-probe.mjs`.
+14. **The client credentials are minted and printed unconditionally when `--oauth` is on.**
+    No flag asks for them, and the pair is not the *registration* of anything: it exists to be
+    pasted into a client, and it is the only copy there is. `oauth-probe.mjs` asserts the two
+    log lines, and `scripts/config-test.mjs` asserts that pinning the pair without
+    `--oauth-redirect` is a complete configuration — that shape is what the launcher always
+    produces.
 
 ## Working conventions
 
@@ -176,12 +191,26 @@ port to the internet.
   composer is gone when only `--oauth` is on, and a gate nobody can answer is not a gate.
 - **A hosted client is added with credentials from here, not by registering itself.** Gemini's
   "custom connected app" asks the human for a client id, a client secret and (behind a button)
-  a redirect URI to allow. So `--oauth-redirect <uri>` registers one confidential client whose
-  credentials the bridge mints and prints, and whose redirect URI was typed in by the human
-  rather than sent to `/register`. Two consequences worth keeping: the credentials are
-  per-run unless `--oauth-client-id`/`--oauth-client-secret` pin them, and the client's name
-  on the consent card is the redirect URI's host, because that is the part the human
-  recognises.
+  a redirect URI to allow. So the bridge mints a confidential client and prints its
+  credentials, and that client was never sent to `/register`. Three consequences worth
+  keeping: the credentials are per-run unless `--oauth-client-id`/`--oauth-client-secret` pin
+  them; the client's name on the consent card is the redirect URI's host, because that is the
+  part the human recognises; and `--oauth-redirect` only decides whether the address is known
+  *in advance* (see the next entry).
+- **The redirect URI is learned late by default, because that is the only order that works.**
+  The credentials have to be pasted into the hosted product *before* it shows the human its
+  callback address, so at startup there is no address to register and `--oauth-redirect` can
+  never be mandatory. The first shape shipped this wrong: credentials were minted only when
+  `--oauth-redirect` was given, so plain `pimcp` printed no client id at all and a
+  hand-configured client could not be added without being told a URI the product had not
+  revealed yet. Now the pair is always minted and printed, an unregistered address from a
+  client that has a secret is accepted, and it is printed in full on the card where Allow/Deny
+  live, under a line saying the address was not set up in advance. `decide()` records it on
+  approval (`OAuthProvider.learnRedirect`, capped at 5 per client), so a repeat of the same
+  address is not flagged again while a *different* one is. The probe pins the whole sequence
+  on a server started the way the launcher starts one: credentials pinned, no
+  `--oauth-redirect`, then first-time address → card → approval → tokens, then the same
+  address unflagged, then a new one flagged, then a public client refused outright.
 - **A scope this bridge does not have is narrowed, not refused.** This reverses an earlier
   choice that returned `invalid_scope`. A hosted client asks for whatever its own platform
   taught it to ask for (`openid`, `email`) and has no way to learn that this bridge offers
@@ -279,12 +308,21 @@ port to the internet.
   `node -e "import('@silvia-odwyer/photon-node')"` inside a built `app/` that otherwise worked
   perfectly; `KEEP` is now `[source, destination]` pairs whose destination is the bare name.
   Measured together: 155.1MB → 150.7MB, `app/` 12M → 5.9M.
-- **Git Bash's `tar` is MSYS GNU tar, and it reads `D:\…` as `host:path`.** Extracting the Node
-  runtime on Windows therefore dies with `tar: Cannot connect to D: resolve failed` in Git Bash
-  while the identical command works in PowerShell. Put Windows' own `bsdtar` first for the build
-  (`PATH="/c/Windows/System32:$PATH" node scripts/package.mjs --win32-x64`) — and invoke `node`
-  directly rather than `PATH=… npm run package:win`, because npm is itself a shell shim and
-  fails first with `/bin/bash: C:/Program Files/nodejs/npm: No such file or directory`.
+- **Git Bash's `tar` is MSYS GNU tar: it reads `D:\…` as `host:path`, and it cannot read a
+  zip at all.** Both halves bit `npm run package` on Windows, in sequence, and the second only
+  became visible after the first was worked around. `tar -xf D:\dist\node-v….zip` → `tar:
+  Cannot execute remote shell: No such file or directory`; with forward slashes instead →
+  `tar: Cannot connect to D: resolve failed` (still rsh: the colon is the host separator, and
+  `MSYS_NO_PATHCONV=1` changes nothing because it is tar's own argument parsing, not path
+  conversion); with the path made relative to `dist/` → `tar: This does not look like a tar
+  archive`, because GNU tar is not bsdtar and never reads a zip. The same command works from
+  PowerShell only because `tar` there *is* bsdtar. `scripts/package.mjs` now names the
+  extractor itself — `TAR` is `%SystemRoot%\System32\tar.exe` on Windows, plain `tar`
+  elsewhere — and passes paths relative to `dist/` with `cwd: dist`, so the build no longer
+  depends on which shell started it. `curl`, in the same function, was never affected (it is a
+  native Windows binary). Before that fix, the byte-identical 36.4MB zip extracted fine under
+  PowerShell and failed under Git Bash, which is exactly the kind of difference that reads as
+  "the download is corrupt" and is not.
 - **The packaged launcher lives at the package root, so it must not `..` its way up.**
   `dist/<platform>/pimcp.mjs` finds `app/`, `runtime/` and `bin/` as siblings; a `..` makes
   it look in `dist/app/index.mjs`, which does not exist, and every run dies with "this
@@ -298,9 +336,10 @@ port to the internet.
   `Registered tunnel connection` check are duplicated on purpose, because a package that
   drifts from the checkout is worse than two files. The duplication has grown, and it is
   worth naming: **argument parsing, which flags default to on (`--oauth`), the minting of a
-  hand-configured client's credentials, and the wording of the ready banner** now exist
-  twice. A change to any of those four belongs in both files in the same commit; if a fifth
-  appears, extract them into a module both can import instead of adding to the pile.
+  hand-configured client's credentials (now unconditional), and the wording of the ready
+  banner** now exist twice. A change to any of those four belongs in both files in the same
+  commit; if a fifth appears, extract them into a module both can import instead of adding to
+  the pile.
 - **Vendor the portable cloudflared, not the nearest one.** The official release is
   statically linked, so it runs anywhere; a Homebrew copy points its ELF interpreter at
   `/home/linuxbrew/.linuxbrew/lib/ld.so`, which the recipient does not have, and shipping it

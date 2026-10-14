@@ -525,7 +525,18 @@ function authCard(p) {
   var warn = document.createElement('div');
   warn.className = 'warn';
   warn.textContent = 'Allowing this hands it a shell on this computer.';
-  body.appendChild(who); body.appendChild(what); body.appendChild(warn);
+  body.appendChild(who); body.appendChild(what);
+  // Nothing checked that address against anything: the client named it in the request
+  // that just arrived. The human reading it is the only check there is, so it is said
+  // here rather than left for them to infer from a URI they have never seen.
+  if (p.unregisteredRedirect) {
+    var fresh = document.createElement('div');
+    fresh.className = 'warn';
+    fresh.textContent = 'That address was not set up in advance — the client sent it just now, and ' +
+      'allowing is what allows it (for this run only).';
+    body.appendChild(fresh);
+  }
+  body.appendChild(warn);
 
   var btns = document.createElement('div');
   btns.className = 'btns';

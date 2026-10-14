@@ -14,10 +14,13 @@ import path from "node:path";
  * nothing" and "the page a client's browser lands on cannot approve anything" are
  * the checks worth having.
  *
- * The last section runs a *second* server, configured the way a hosted client
- * needs (a pre-registered confidential client, no --human). That is the shape a
- * product like Gemini's "custom connected app" is added in, and it is deliberately
- * not the shape the rest of this file uses.
+ * The last two sections each run a *second* (and third) server, because the shape
+ * of the client decides the shape of the flow. The second is a hosted product's
+ * "custom connected app": a pre-registered confidential client that never
+ * registers itself, sends no PKCE, and whose redirect URI the operator named up
+ * front. The third is the default - the pair is printed and no address is known in
+ * advance - which is what plain `pimcp` produces, and where the address has to come
+ * from the client and be permitted by the human's own click.
  *
  * Usage: node scripts/oauth-probe.mjs
  */
@@ -183,6 +186,19 @@ try {
     JSON.stringify(asm.code_challenge_methods_supported));
 
   console.log("\n--- the human is in the loop ---");
+  // The pair a person configures a client with is printed by default, with no flag
+  // asking for it and no redirect URI known in advance - which is the only shape that
+  // works for a product that shows you its callback address after you have already
+  // pasted the credentials in.
+  const firstLog = logs.join("");
+  check("a client id and secret are printed without being asked for",
+    /oauth: client id\s+\S+/.test(firstLog) && /oauth: client secret\s+\S+/.test(firstLog),
+    firstLog.split("\n").filter((l) => l.includes("oauth: client")).map((l) => l.trim()).join(" | ") ||
+      "(no credential lines)");
+  check("and the log says no redirect URI is known in advance",
+    firstLog.includes("no redirect URI is set up in advance"),
+    firstLog.split("\n").find((l) => l.includes("redirect URI"))?.trim() ?? "(no line)");
+
   const reg = await register("arena-agent");
   check("a client can register itself", reg.status === 201 && typeof reg.body.client_id === "string",
     `HTTP ${reg.status}`);
@@ -482,6 +498,117 @@ try {
   failures++;
 } finally {
   hosted.kill();
+  await sleep(200);
+}
+
+/**
+ * A third server, in the shape `pimcp` produces by default: a printed credential
+ * pair, and *no* redirect URI known in advance.
+ *
+ * That last part is not a shortcut, it is the only possibility. A product that asks
+ * you to paste a client id and secret into it shows you its callback address in the
+ * same dialog - after the bridge is already running, so there was never a moment at
+ * which it could have been registered. Refusing the address means such a client can
+ * never finish; accepting it silently means nobody ever looked at it. So it is
+ * accepted *and shown*, and only the human's click on that address allows it.
+ *
+ * The deny cases are what keep this from being an open redirect: a public client
+ * gets no such path (no secret means the exact match is all that protects its code),
+ * and the permission is per address, not per client.
+ */
+const PORT3 = 8821, UI3 = 8822;
+const BASE3 = `http://127.0.0.1:${PORT3}`;
+const UI3_BASE = `http://127.0.0.1:${UI3}`;
+const DEFAULT_ID = "pimcp-probe-default";
+const DEFAULT_SECRET = "probe-default-secret";
+const LATE_REDIRECT = "https://client.example.com/oauth/callback";
+const LATER_REDIRECT = "https://client.example.com/oauth/other";
+
+// The pair is pinned so the probe knows what to send - which is exactly what the
+// launcher does now that it mints them itself. No --oauth-redirect: the address is
+// not known yet, which is the whole point of this section.
+const plainSpawn = spawn(process.execPath,
+  ["src/index.ts", "--root", root, "--http", "--port", String(PORT3), "--ui-port", String(UI3),
+   "--oauth", "--oauth-client-id", DEFAULT_ID, "--oauth-client-secret", DEFAULT_SECRET],
+  { stdio: ["ignore", "pipe", "pipe"] });
+const plainLogs = [];
+plainSpawn.stderr.on("data", (d) => plainLogs.push(d.toString()));
+
+const warning = "was <strong>not</strong> set up in advance";
+
+try {
+  await waitForPort(plainSpawn, PORT3, plainLogs);
+
+  console.log("\n--- the default shape: credentials, and a redirect URI that is not known yet ---");
+  check("a pinned pair with no --oauth-redirect starts instead of exiting",
+    plainLogs.join("").includes(`oauth: client id     ${DEFAULT_ID}`),
+    plainLogs.join("").split("\n").filter((l) => l.includes("client id")).map((l) => l.trim()).join(" | "));
+
+  const arrive = (redirect, extra = "") =>
+    get(`${BASE3}/authorize?response_type=code&client_id=${DEFAULT_ID}` +
+        `&redirect_uri=${encodeURIComponent(redirect)}&state=late-1${extra}`).then(async (r) => ({
+      status: r.status,
+      page: await r.text(),
+    }));
+
+  const first = await arrive(LATE_REDIRECT, "&scope=openid%20profile");
+  check("a client that names its address for the first time gets the consent page",
+    first.status === 200, `HTTP ${first.status}`);
+  check("and the page says the address was never set up in advance",
+    first.page.includes(warning) && first.page.includes(LATE_REDIRECT), "consent page");
+  check("the server log says the same thing where an operator can read it",
+    /asked to be sent to an address it was not configured with/.test(plainLogs.join("")),
+    plainLogs.join("").split("\n").filter((l) => l.includes("not configured with")).pop()?.trim() ?? "(no line)");
+
+  const firstId = first.page.match(/\/oauth\/pending\?id=([A-Za-z0-9_-]+)/)?.[1] ?? null;
+  await approve(UI3_BASE, firstId);
+  const firstCode = new URL((await get(`${BASE3}/oauth/pending?id=${firstId}`).then((r) => r.json()))
+    .redirect).searchParams.get("code");
+  const lateTokens = await postForm(`${BASE3}/token`, {
+    grant_type: "authorization_code", code: firstCode, client_id: DEFAULT_ID,
+    client_secret: DEFAULT_SECRET, redirect_uri: LATE_REDIRECT,
+  }).then(async (r) => ({ status: r.status, body: await r.json() }));
+  check("approving it buys tokens with the printed secret and no PKCE",
+    lateTokens.status === 200 && lateTokens.body.scope === "mcp",
+    `HTTP ${lateTokens.status} ${JSON.stringify(lateTokens.body).slice(0, 120)}`);
+  const lateCall = await mcp(BASE3, "tools/list", {}, lateTokens.body.access_token);
+  check("and that token opens /mcp", lateCall.http === 200 &&
+    Array.isArray(lateCall.msg?.result?.tools), `HTTP ${lateCall.http}`);
+
+  // Approving an address is what registers it, so the second request from the same
+  // address is an ordinary one. The warning is a prompt, not a permanent banner.
+  const again = await arrive(LATE_REDIRECT);
+  check("the same address a second time is no longer flagged as new",
+    again.status === 200 && !again.page.includes(warning), `HTTP ${again.status}`);
+
+  const elsewhere = await arrive(LATER_REDIRECT);
+  check("but a different address is flagged again - the permission is per address",
+    elsewhere.status === 200 && elsewhere.page.includes(warning), `HTTP ${elsewhere.status}`);
+  const elsewhereId = elsewhere.page.match(/\/oauth\/pending\?id=([A-Za-z0-9_-]+)/)?.[1] ?? null;
+  await approve(UI3_BASE, elsewhereId, false);
+
+  // Learning is tied to there being a secret to lose. A public client has only the
+  // exact match keeping its code from being delivered somewhere else.
+  const publicReg = await fetch(`${BASE3}/register`, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...XFF },
+    body: JSON.stringify({ client_name: "public default", redirect_uris: [REDIRECT],
+      token_endpoint_auth_method: "none", grant_types: ["authorization_code"], response_types: ["code"] }),
+  }).then(async (r) => r.json());
+  const publicLate = await get(`${BASE3}/authorize?response_type=code` +
+    `&client_id=${publicReg.client_id}&redirect_uri=${encodeURIComponent(LATE_REDIRECT)}` +
+    `&state=p&code_challenge=${pkce().challenge}&code_challenge_method=S256`);
+  check("a public client is given no such path: an unregistered address is refused",
+    publicLate.status === 400, `HTTP ${publicLate.status}`);
+
+  console.log("\n--- server log (default shape) ---");
+  console.log(plainLogs.join("").trim());
+} catch (e) {
+  console.error("DEFAULT-SHAPE PROBE FAILED:", e.stack ?? e.message);
+  console.error(plainLogs.join("").trim());
+  failures++;
+} finally {
+  plainSpawn.kill();
   await sleep(200);
 }
 

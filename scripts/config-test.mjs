@@ -71,6 +71,18 @@ console.log(
     : "FAIL  hosted client config " + JSON.stringify(hosted),
 );
 
+// The default shape, and the one the launcher always produces: a pinned pair with no
+// redirect URI named up front. Nothing can name one - the client shows the human its
+// callback address only after the credentials are already in it.
+const lateUri = loadConfig(["--oauth", "--http",
+  "--oauth-client-id", "id-2", "--oauth-client-secret", "secret-2"]);
+console.log(
+  lateUri.oauth === true && lateUri.oauthRedirects.length === 0 && lateUri.oauthClientId === "id-2" &&
+    lateUri.oauthClientSecret === "secret-2"
+    ? "ok    a pinned pair is a valid configuration with no --oauth-redirect"
+    : "FAIL  default client config " + JSON.stringify(lateUri),
+);
+
 // The project was renamed from pi-mcp, and the environment prefix moved with it.
 // Nothing is deployed yet, so the old names are gone rather than aliased - but this
 // is the check that would notice if only half the rename had happened.

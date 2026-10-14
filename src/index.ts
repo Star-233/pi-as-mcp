@@ -10,7 +10,7 @@ import {
   mcpAuthRouter,
 } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { loadConfig, PROJECT } from "./config.ts";
-import { OAuthProvider } from "./oauth.ts";
+import { OAuthProvider, sameSecret } from "./oauth.ts";
 import { mountOAuthEndpoints } from "./oauth-http.ts";
 import { Sandbox } from "./sandbox.ts";
 import { HumanChannel } from "./human/channel.ts";
@@ -42,14 +42,7 @@ if (cfg.oauthRedirects.length && !cfg.oauth) {
   log("--oauth-redirect describes a client of the authorization server, so it needs --oauth.");
   process.exit(1);
 }
-if ((cfg.oauthClientId || cfg.oauthClientSecret) && !cfg.oauthRedirects.length) {
-  log(
-    "--oauth-client-id/--oauth-client-secret are the credentials of the client that " +
-      "--oauth-redirect registers, so they need --oauth-redirect too.",
-  );
-  process.exit(1);
-}
-if (cfg.oauthRedirects.length && Boolean(cfg.oauthClientId) !== Boolean(cfg.oauthClientSecret)) {
+if (Boolean(cfg.oauthClientId) !== Boolean(cfg.oauthClientSecret)) {
   log(
     "--oauth-client-id and --oauth-client-secret have to be given together: pinning one and " +
       "minting the other would break the pair a client has already been configured with.",
@@ -86,12 +79,19 @@ if (cfg.oauth) {
  * credentials have to come from somewhere, and the only somewhere is here, so
  * they are minted unless the caller pinned them - pinning is what makes a restart
  * survivable, since a client that already holds the old pair cannot be told.
+ *
+ * It exists whenever the authorization server does, not only when a redirect URI
+ * was given, because the pair is what a person needs in hand before they can
+ * configure anything: the client shows them the callback address it wants, and
+ * there is no way to know it in advance. With no addresses listed, the human's
+ * first approval is what establishes one (`learnRedirects`).
  */
-const staticClient = cfg.oauthRedirects.length
+const staticClient = cfg.oauth
   ? {
       clientId: cfg.oauthClientId || `pimcp-${crypto.randomBytes(9).toString("base64url")}`,
       clientSecret: cfg.oauthClientSecret || crypto.randomBytes(32).toString("base64url"),
       redirectUris: cfg.oauthRedirects,
+      learnRedirects: cfg.oauthRedirects.length === 0,
     }
   : null;
 
@@ -139,13 +139,6 @@ const bridgeInfo = () => ({
 
 function isLoopbackHost(host: string): boolean {
   return host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]";
-}
-
-/** Length-safe: timingSafeEqual throws on different lengths, which would itself leak. */
-function sameSecret(a: string, b: string): boolean {
-  const x = Buffer.from(a);
-  const y = Buffer.from(b);
-  return x.length === y.length && crypto.timingSafeEqual(x, y);
 }
 
 // The web UI is started when the human channel is on, and also when only --oauth
@@ -268,7 +261,15 @@ if (cfg.http) {
       // client's own OAuth settings, and it is the only copy there is.
       log(`oauth: client id     ${staticClient.clientId}`);
       log(`oauth: client secret  ${staticClient.clientSecret}`);
-      for (const uri of staticClient.redirectUris) log(`oauth: redirects to  ${uri}`);
+      if (staticClient.redirectUris.length) {
+        for (const uri of staticClient.redirectUris) log(`oauth: redirects to  ${uri}`);
+      } else {
+        log(
+          "oauth: no redirect URI is set up in advance, so the first address this client asks to " +
+            "be sent to is shown to you and allowed by your own approval (--oauth-redirect names " +
+            "one up front instead).",
+        );
+      }
     }
     if (isLoopbackHost(issuer.hostname)) {
       log(

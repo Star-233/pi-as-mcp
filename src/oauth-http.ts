@@ -22,6 +22,15 @@ import { sameSecret, type OAuthProvider } from "./oauth.ts";
  * - **The client secret is accepted in the body *or* as HTTP Basic.** The SDK
  *   reads only `client_secret_post`. Which of the two a hosted client uses is not
  *   something this bridge gets to decide.
+ * - **A confidential client may arrive with a redirect URI nobody registered.** That
+ *   is what "custom connected app" means in practice: the product shows the human a
+ *   callback address *after* the bridge has already started, so there is no moment at
+ *   which it could have been listed. Refusing means such a client can never work;
+ *   accepting silently would be worse. So it is accepted and *shown*, in full, on the
+ *   same card where the human clicks Allow, and the address is only recorded if they
+ *   do - see `StaticClient.learnRedirects`. A *public* client gets no such path: with
+ *   no secret, the exact match is the only thing keeping its code from being
+ *   redirected somewhere else.
  *
  * Everything else - discovery, dynamic client registration, revocation - stays
  * with `mcpAuthRouter`, which mounts the same two paths afterwards and is
@@ -145,6 +154,8 @@ export function mountOAuthEndpoints(app: express.Express, provider: OAuthProvide
     // can see them. Before it, reporting there would be an open redirect.
     const requestedRedirect = text(p, "redirect_uri");
     let redirectUri: string;
+    /** True when the address below was never configured for this client. */
+    let unregistered = false;
     if (requestedRedirect === undefined) {
       if (client.redirect_uris.length !== 1) {
         return sendError(
@@ -152,15 +163,24 @@ export function mountOAuthEndpoints(app: express.Express, provider: OAuthProvide
           res,
           400,
           "invalid_request",
-          "redirect_uri is required when the client has more than one registered",
+          "redirect_uri is required when the client has no single registered one",
         );
       }
       redirectUri = client.redirect_uris[0];
     } else {
-      if (!client.redirect_uris.some((registered) => redirectUriMatches(requestedRedirect, registered))) {
+      const known = client.redirect_uris.some((registered) => redirectUriMatches(requestedRedirect, registered));
+      const learnable = Boolean(client.client_secret) && provider.mayLearnRedirect(client.client_id);
+      if (!known && !learnable) {
         return sendError(log, res, 400, "invalid_request", "redirect_uri is not registered for this client");
       }
       redirectUri = requestedRedirect;
+      unregistered = !known;
+      if (unregistered) {
+        // Worth a line of its own: the client is about to be sent to an address that
+        // nothing here checked, and if the human denies the card, this is the reason.
+        log(`oauth: ${client.client_id} asked to be sent to an address it was not configured with, ` +
+            `so the human's click on the card is what decides it: ${redirectUri}`);
+      }
     }
 
     const state = text(p, "state");
@@ -194,6 +214,7 @@ export function mountOAuthEndpoints(app: express.Express, provider: OAuthProvide
           redirectUri,
           codeChallenge: challenge,
           resource: resource ? new URL(resource) : undefined,
+          unregisteredRedirect: unregistered,
         },
         res,
       );
