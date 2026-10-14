@@ -58,22 +58,25 @@ npm install
 npm link                # puts the `pimcp` command on your PATH — once
 
 cd /path/to/workdir     # the directory the agent should own
-pimcp --human           # server + token + public tunnel, prints a paste-ready URL
-pimcp --human --oauth   # ...and let clients authorize themselves instead
+pimcp                   # server + token + public tunnel + OAuth, prints a paste-ready URL
+pimcp --human           # ...and the human channel, so the agent can talk to you
+pimcp --no-oauth        # ...without the authorization server (the client needs the token)
 ```
 
 `pimcp` roots the server at the **current directory**, picks free ports, mints a bearer
 token, opens a Cloudflare quick tunnel, waits for cloudflared to register with the edge,
-opens the human UI, and prints the MCP URL and token. Ctrl-C stops everything.
+opens the web UI, and prints the MCP URL and token. Ctrl-C stops everything.
 `pimcp --no-tunnel` keeps it on localhost; `pimcp --help` lists the rest.
 
-With `--oauth` the order changes: the tunnel is opened *first*, so that the authorization
-server can advertise the public hostname it will actually be reached on.
+**OAuth is on by default**, so a client that speaks MCP's authorization flow needs nothing
+but the printed URL: it discovers the authorization server, asks for access, and you approve
+it in the UI. A client that cannot do OAuth still has the bearer token. `--no-oauth` removes
+the authorization server entirely.
 
-**The human channel is off unless you pass `--human`.** Without it the bridge is a plain
-tool surface: no web UI, no `human_say`/`human_ask`/`human_wait`, no `<human>` section in
-the prompt, and no approval gate. That is the right shape for handing the bridge to
-somebody who only wants the coding tools, and it is what the packaged build assumes.
+**The human channel is off unless you pass `--human`.** Without it the agent gets no
+`human_say`/`human_ask`/`human_wait` and no `<human>` section in the prompt. The UI still
+runs whenever `--oauth` is on, because that is where an authorization is approved — it just
+has no composer and no conversation in it.
 
 Without the wrapper:
 
@@ -87,8 +90,8 @@ node src/index.ts --root /path/to/workdir --http --port 8777 --token "$(openssl 
 # with the human channel and a yes/no gate on shell commands
 node src/index.ts --root /path/to/workdir --human --approve bash
 
-# with an authorization server in front of it
-node src/index.ts --root /path/to/workdir --human --http --oauth \
+# with an authorization server in front of it (the human channel is not required)
+node src/index.ts --root /path/to/workdir --http --oauth \
   --issuer https://mcp.example.com
 ```
 
@@ -115,34 +118,89 @@ Cloudflare **error 1033 / HTTP 530**, you are pointing at a tunnel from a previo
 
 ## OAuth
 
-`--oauth` turns the bridge into its own OAuth 2.1 authorization server, so a client that
-speaks MCP's authorization flow can be given access **without you copying a token into it**.
-The bearer token keeps working at the same time, for clients that cannot do OAuth.
+`--oauth` turns the bridge into its own OAuth 2.1 authorization server, so a client
+can be given access **without you copying a token into it**. The bearer token keeps
+working at the same time, for clients that cannot do OAuth. `pimcp` turns OAuth on by
+default; `--no-oauth` goes back to a token-only bridge.
 
-```bash
-pimcp --human --oauth                       # issuer defaults to the quick-tunnel hostname
-pimcp --human --oauth --issuer https://mcp.example.com
-```
+Which of the two shapes below applies is decided by the client, not by you.
 
-This is what a client does, and what it sees:
+### A client that registers itself
+
+A spec-shaped MCP client does this without being asked:
 
 1. It calls `/mcp`, gets `401` with `WWW-Authenticate: Bearer resource_metadata="…"`.
 2. It fetches `/.well-known/oauth-protected-resource/mcp`, then
    `/.well-known/oauth-authorization-server`.
-3. It registers itself at `/register` (dynamic client registration), then sends its browser
-   to `/authorize` with a PKCE `code_challenge`.
+3. It registers itself at `/register` (dynamic client registration, RFC 7591) and sends
+   its browser to `/authorize` with a PKCE `code_challenge`.
 4. **That page has no buttons.** It names the client and where it wants to redirect, and
-   says to approve it on your own machine. It then waits.
-5. The request appears as a card in the human UI — client name, redirect target, scope — with
-   **Allow** and **Deny**. Nothing happens until you click one.
-6. Allow: the browser is handed a one-shot code and redirected back. The client exchanges it
-   at `/token` for an access token (12h) and a refresh token (30d), and calls `/mcp` with it.
+   says to approve on your own machine. It then waits.
+5. The request appears as a card in the bridge UI — client name, redirect target, scope —
+   with **Allow** and **Deny**. Nothing happens until you click one.
+6. Allow: the browser is handed a one-shot code and redirected back. The client exchanges
+   it at `/token` for an access token (12h) and a refresh token (30d).
 
-**The decision lives on the human UI on purpose.** The page at `/authorize` is served from
-whatever address the client reached — over a quick tunnel, that is the open internet — and a
-button there would be an authorization any stranger who found the URL could click. The UI is
-bound to loopback and can carry `--ui-token`; a page that only you can open is the only kind
-that can be allowed to hand away a shell.
+### A client you configure by hand: Gemini's "custom connected app"
+
+A hosted product asks *you* for a client id, a client secret, and — behind a button —
+shows you a redirect URI to allow. Such a client never registers itself and never learns
+that this bridge's scope is called `mcp`, so the bridge has to be told about it up front:
+
+```bash
+pimcp --oauth-redirect https://oauth-redirect.googleusercontent.com/r/<your-app>
+```
+
+It prints, along with everything else:
+
+```
+  Client credentials — paste these into the client's own OAuth settings, then add the
+  redirect URI it shows you below to that client's allowed list:
+      client id      pimcp-ZhySNFlK2i04
+      client secret  PAootb1Kkdx75D6ATZxTQoAJ2icfeF3RQzY0xTw-rNM
+      redirects to   https://oauth-redirect.googleusercontent.com/r/<your-app>
+```
+
+Paste the id and secret into the dialog (**客户端 ID** / **客户端密钥**), and make sure
+the URI behind **复制重定向 URI** is the one printed above — the bridge only accepts the
+URIs it was given, and only for that one client. Then continue in the dialog, and approve
+the request on the bridge UI, which `pimcp` opens for you.
+
+Those credentials are minted fresh on every run, because nothing here is persisted. To
+keep a pair across restarts — which is what you want, since the client already holds it —
+pin both:
+
+```bash
+pimcp --oauth-redirect https://…/r/<your-app> \
+      --oauth-client-id pimcp-gemini --oauth-client-secret "$(openssl rand -base64 32)"
+```
+
+**What a hand-configured client may do differently**, and why:
+
+- **Skip PKCE.** Its client secret plus an exactly-matched redirect URI is what protects
+  the authorization code — the arrangement RFC 6749 §4.1 described before PKCE existed.
+  A client *without* a secret must use PKCE S256: that is what the MCP specification
+  requires, and it is the only thing protecting its code. A public client that skips PKCE
+  is turned away with `invalid_request`.
+- **Send its secret in the body or as HTTP Basic.** Which of the two a hosted client
+  chooses is not this bridge's decision to make.
+
+What it may **not** do: redirect anywhere but its registered URIs, or get a token without
+your click. `--oauth-redirect` replaces the registration step, not the human.
+
+A scope the bridge does not have is **narrowed to `mcp` rather than refused** (RFC 6749
+§3.3 permits issuing less than was requested). A hosted client asks for whatever its own
+platform taught it to ask for — `openid`, say — and has no way to find out otherwise. The
+consent page states what was asked for and what will actually be granted.
+
+**The decision lives on the bridge UI on purpose.** The page at `/authorize` is served
+from whatever address the client reached — over a quick tunnel, that is the open internet
+— and a button there would be an authorization any stranger who found the URL could click.
+The UI is bound to loopback and can carry `--ui-token`; a page that only you can open is
+the only kind that can be allowed to hand away a shell. Note that this is why `--oauth`
+starts the UI: the page carrying Allow/Deny is not something you have to want to *converse*
+with an agent to need. Without `--human` you get the UI as an approval console and nothing
+else — no `human_say`/`human_ask`/`human_wait`, no composer in the page.
 
 Requests wait 10 minutes for you and then expire; at most 8 may be pending at once. Everything
 is in memory: tokens, registered clients and pending requests all die with the process, so a
@@ -160,7 +218,8 @@ here than a quick tunnel, whose hostname changes every restart.
 
 `http://127.0.0.1:8790` is a single self-contained page — no CDN, no build step, and the
 markdown and LaTeX libraries are vendored in `src/human/vendor/`, so it works with the
-network off. **Only started with `--human`**; without that flag the port is never bound.
+network off. It runs with `--human`, and with `--oauth` (where it is only an approval
+console: no composer, no conversation). Without either flag the port is never bound.
 
 - **One timeline.** Agent messages, your messages, and every tool call the agent runs on
   this machine, in the order they happened. Tool rows are compact
@@ -185,6 +244,9 @@ network off. **Only started with `--human`**; without that flag the port is neve
   timeline — not in it, because it is not something the agent said — with **Allow** and
   **Deny**. It stays until you answer or it expires in 10 minutes, and it chimes like a
   question. The client's name is shown as text, never as markup: it chose that name itself.
+- **What ran on this machine.** Tool calls are listed whenever the UI is up, including the
+  `--oauth`-only case. Watching a client work while you decide whether to trust it is the
+  point of having the page there at all.
 
 `ui.html` is read on every request, so changing it costs a browser refresh, not a restart of
 the bridge. Changes to `src/*.ts` still need a restart.
@@ -203,12 +265,14 @@ restart clears it.
 ## Configuration
 
 Flags take precedence over environment variables. Environment variables all carry the
-`PI_AS_MCP_` prefix, after the project's name.
+`PI_AS_MCP_` prefix, after the project's name. The **defaults below are the server's**;
+`pimcp` deliberately differs on one of them (it turns `--oauth` on) and says so in the
+table row.
 
 | Flag | Env | Default | Meaning |
 |---|---|---|---|
 | `--root` | `PI_AS_MCP_ROOT` | cwd | Sandbox root. Every path argument is confined here. |
-| `--human` | `PI_AS_MCP_HUMAN=1` | off | Expose the human channel: `human_say`/`human_ask`/`human_wait`, the web UI, the `<human>` prompt section, and the approval gate. Also where an OAuth authorization is approved. |
+| `--human` | `PI_AS_MCP_HUMAN=1` | off | Expose the human channel: `human_say`/`human_ask`/`human_wait` and the approval gate. The web UI comes with it, but is not exclusive to it — `--oauth` starts the UI too. |
 | `--tools` | `PI_AS_MCP_TOOLS` | 7 on Linux, 8 on Windows | Comma-separated subset to expose. `powershell` is Windows-only. |
 | `--approve` | `PI_AS_MCP_APPROVE` | none | Tools that require human approval, e.g. `bash`. **Needs `--human`**: with no human there is nobody to ask, so the bridge refuses to start instead of auto-approving. |
 | `--deny` | `PI_AS_MCP_DENY` | `.ssh,.aws,.gnupg,.git-credentials,.netrc,.config/gcloud` | Paths refused even inside the root. |
@@ -216,10 +280,12 @@ Flags take precedence over environment variables. Environment variables all carr
 | `--http` | `PI_AS_MCP_HTTP=1` | off | Serve Streamable HTTP instead of stdio. |
 | `--port` / `--host` | `PI_AS_MCP_PORT` / `PI_AS_MCP_HOST` | 8777 / 127.0.0.1 | HTTP listener. A port already in use is a hard error, not a silent fallback. |
 | `--token` | `PI_AS_MCP_TOKEN` | none | Bearer token. **Set this if you expose the port**, unless you use `--oauth`. |
-| `--oauth` | `PI_AS_MCP_OAUTH=1` | off | Serve an OAuth 2.1 authorization server in front of `/mcp`. **Needs `--http` and `--human`**: the flow has to be authenticated somewhere, and approved by somebody. |
+| `--oauth` | `PI_AS_MCP_OAUTH=1` | off (**on in `pimcp`**) | Serve an OAuth 2.1 authorization server in front of `/mcp`, and run the UI that approves it. **Needs `--http`.** |
 | `--issuer` | `PI_AS_MCP_ISSUER` | the tunnel hostname, else `http://127.0.0.1:<port>` | The URL clients reach, and the identity the authorization server advertises. Only with `--oauth`. Must be `https`, or a loopback `http` address. |
-| `--ui-port` / `--ui-host` | `PI_AS_MCP_UI_PORT` / `PI_AS_MCP_UI_HOST` | 8790 / 127.0.0.1 | Human web UI. Ignored without `--human`. |
-| `--ui-token` | `PI_AS_MCP_UI_TOKEN` | none | Token for the human UI. **Set it if you bind the UI to anything but loopback** — with `--oauth`, the UI is what can grant access here. |
+| `--oauth-redirect` | `PI_AS_MCP_OAUTH_REDIRECT` | none | Register one pre-configured client allowed to return to these URIs (comma-separated). Its credentials are printed at startup. For a client that will never register itself — Gemini's "custom connected app". Only with `--oauth`. |
+| `--oauth-client-id` / `--oauth-client-secret` | `PI_AS_MCP_OAUTH_CLIENT_ID` / `…_SECRET` | minted per run | Pin that client's credentials so a restart does not invalidate a pair the client already holds. Both together, and only with `--oauth-redirect`. |
+| `--ui-port` / `--ui-host` | `PI_AS_MCP_UI_PORT` / `PI_AS_MCP_UI_HOST` | 8790 / 127.0.0.1 | The web UI. Runs with `--human` or `--oauth`; ignored without either. |
+| `--ui-token` | `PI_AS_MCP_UI_TOKEN` | none | Token for the UI. **Set it if you bind the UI to anything but loopback** — with `--oauth`, the UI is what can grant access here. |
 
 ## Security
 
@@ -230,9 +296,12 @@ design, so:
   path arguments, but a shell can still reach anything the process can.
 - **Always set `--token` when using `--http`, unless you are using `--oauth`.** Without either,
   the port is unauthenticated and the bridge logs a warning.
-- **With `--oauth`, the human UI is the authorization authority.** Keep it on loopback, or set
+- **With `--oauth`, the web UI is the authorization authority.** Keep it on loopback, or set
   `--ui-token`. A UI that others can reach with no token is a way for them to authorize
   themselves; the bridge warns and the info panel calls it out.
+- **A hand-configured client's secret is a credential you now have to keep.** It is printed
+  once per run unless you pin it with `--oauth-client-id`/`--oauth-client-secret`; anyone who
+  reads it can ask for access, but still cannot get a token without your click.
 - **An OAuth access token is a shell until it expires** (12h, refreshable for 30 days or until
   the process ends). Denying a request that has not been answered yet is the only way to
   refuse — once granted, the way to take it back is to restart the bridge. Keep the run short;
@@ -312,9 +381,11 @@ pimcp.cmd                          # Windows: tunnel + localhost, prints both UR
 ```
 
 Every flag the bridge understands works unchanged. On startup it prints an **MCP URL you
-can paste into your client from anywhere on the internet**, plus the bearer token — that is
-the whole "I run it on my machine, you connect from yours" flow. `--no-tunnel` keeps it on
-localhost.
+can paste into your client from anywhere on the internet** — and because `--oauth` is on by
+default, a client that speaks the authorization flow needs nothing else. A bearer token is
+printed too, for clients that cannot do OAuth. That is the whole "I run it on my machine, you
+connect from yours" flow. `--no-tunnel` keeps it on localhost, `--no-oauth` drops the
+authorization server.
 
 Four details worth knowing:
 
@@ -385,7 +456,10 @@ npm run accept  # end-to-end human acceptance; you reply in the browser
 The probes spawn the real server and assert on real MCP traffic, including that a sandbox
 escape is refused, that an unapproved shell command never runs, and that an authorization
 code cannot be replayed, a wrong PKCE verifier is refused, and a denied request grants
-nothing.
+nothing. `scripts/oauth-probe.mjs` then runs a **second** server configured the way a
+hosted client needs — a pre-registered confidential client, no `--human` — and drives it
+with no PKCE at all, once with the secret in the body and once as HTTP Basic, while checking
+that a public client without PKCE is still refused.
 
 ## Gotchas
 
@@ -419,9 +493,20 @@ nothing.
   fine as long as the two documents agree — a client resolves the metadata endpoint from
   `authorization_servers[0]` and compares the issuer it finds against exactly that string —
   which is what `scripts/oauth-probe.mjs` checks. Do not "fix" one of them by hand.
-- **`--oauth` without `--human` or `--http` is a hard exit.** The same reasoning as
-  `--approve`: an authorization is granted by a person clicking, an HTTP header is what it
-  authenticates, and a flag that cannot do its job should not look like it worked.
+- **`--oauth` starts the web UI, and that is not the same as `--human`.** The UI is where
+  Allow/Deny lives; the human channel is whether the agent can *talk* to you. Requiring
+  `--human` for `--oauth` is what made a hosted client impossible to add: an authorization
+  needs a click, not a conversation.
+- **PKCE is required from a public client and optional for one with a secret.** The MCP
+  specification requires S256 from every client, and the SDK's own `/token` handler enforces
+  it (`code_verifier: z.string()`), which a client such as Gemini's connector may never send.
+  `src/oauth-http.ts` therefore serves `/authorize` and `/token` itself, mounted *before*
+  `mcpAuthRouter` so its versions are shadowed — which is why nothing in them may call
+  `next()`. Discovery, `/register` and `/revoke` are still the SDK's.
+- **A scope this bridge does not have is narrowed, not refused.** A hosted client asks for
+  whatever its platform taught it (`openid`, `email`) and cannot learn otherwise; RFC 6749
+  §3.3 allows issuing less than requested. What must never happen is granting more, and the
+  probe asserts the scope on the *token*, not just on the page.
 - **Authorization endpoints are rate-limited, and the tunnel sets `X-Forwarded-For`.**
   Express refuses to key the limiter on a header it has not been told to trust, which shows up
   as noise or a 500 that only happens behind the tunnel. `src/index.ts` sets `trust proxy 1`

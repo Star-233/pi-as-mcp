@@ -24,7 +24,12 @@ const checks = [
   // not a thing to switch on by accident.
   ["oauth", c.oauth, false],
   ["issuer", c.issuer, ""],
+  ["oauthRedirects.length", c.oauthRedirects.length, 0],
   ["serverName", c.serverName, "pi-as-mcp"],
+  // The web UI is not the human channel: it is the page where an authorization is
+  // approved, so --oauth starts it too. Conflating the two is what made a hosted
+  // client impossible to add, which is the bug this field exists to prevent.
+  ["humanUI without either flag", c.humanUI, false],
 ];
 let bad = 0;
 for (const [k, got, want] of checks) {
@@ -52,19 +57,35 @@ console.log(
     : "FAIL  oauth flags " + JSON.stringify(c3),
 );
 
+// --oauth alone has to be a complete configuration now: the UI comes with it and
+// the human channel stays off. That is the hosted-client case - a client added by
+// pasting a client id and secret into it, where there is no conversation to have.
+const hosted = loadConfig(["--oauth", "--http",
+  "--oauth-redirect", "https://oauth-redirect.example.com/r/x,https://other.example.com/cb",
+  "--oauth-client-id", "id-1", "--oauth-client-secret", "secret-1"]);
+console.log(
+  hosted.oauth === true && hosted.human === false && hosted.humanUI === true &&
+    hosted.oauthRedirects.length === 2 && hosted.oauthClientId === "id-1" &&
+    hosted.oauthClientSecret === "secret-1"
+    ? "ok    --oauth alone brings the UI, not the human channel"
+    : "FAIL  hosted client config " + JSON.stringify(hosted),
+);
+
 // The project was renamed from pi-mcp, and the environment prefix moved with it.
 // Nothing is deployed yet, so the old names are gone rather than aliased - but this
 // is the check that would notice if only half the rename had happened.
 process.env.PI_AS_MCP_OAUTH = "1";
 process.env.PI_AS_MCP_PORT = "9310";
+process.env.PI_AS_MCP_OAUTH_REDIRECT = "https://env.example.com/cb";
 const c4 = loadConfig([]);
 console.log(
-  c4.oauth === true && c4.httpPort === 9310
+  c4.oauth === true && c4.httpPort === 9310 && c4.oauthRedirects[0] === "https://env.example.com/cb"
     ? "ok    env answers to PI_AS_MCP_"
-    : "FAIL  env prefix " + JSON.stringify({ oauth: c4.oauth, port: c4.httpPort }),
+    : "FAIL  env prefix " + JSON.stringify({ oauth: c4.oauth, port: c4.httpPort, r: c4.oauthRedirects }),
 );
 delete process.env.PI_AS_MCP_OAUTH;
 delete process.env.PI_AS_MCP_PORT;
+delete process.env.PI_AS_MCP_OAUTH_REDIRECT;
 
 process.env.PI_MCP_PORT = "9320";
 const c5 = loadConfig([]);

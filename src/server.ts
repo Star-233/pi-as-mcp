@@ -288,7 +288,10 @@ export function createMcpServer(cfg: Config, piTools: AdaptedTool[], channel: Hu
 
     // The human sees every call this bridge runs on their machine, not just the
     // ones that speak through human_say. A tool call that errors still records.
-    const callId = cfg.human ? channel.toolStart(name, summary) : null;
+    // Gated on whether the page is up rather than on the human channel: with
+    // --oauth and no --human that page is an approval console, and what the client
+    // is doing to this machine is exactly what belongs on it.
+    const callId = cfg.humanUI ? channel.toolStart(name, summary) : null;
     const started = Date.now();
 
     try {

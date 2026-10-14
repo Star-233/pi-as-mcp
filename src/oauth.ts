@@ -24,13 +24,32 @@ import type {
  * clicking Allow on a card in the local bridge UI - and every grant dies with
  * the process. A client that outlives a restart simply authorizes again.
  *
- * The endpoints (discovery, dynamic registration, PKCE, token, revocation) come
- * from the MCP SDK's `mcpAuthRouter`; this module supplies the storage and the
- * one decision the SDK cannot make on its own.
+ * Discovery, dynamic registration and revocation come from the MCP SDK's
+ * `mcpAuthRouter`. `/authorize` and `/token` are served by `src/oauth-http.ts`
+ * instead, because the SDK's versions enforce two things that a *hosted* client
+ * does not do: it requires PKCE from every client, and it reads the client secret
+ * only from the POST body. Neither is wrong for a client that implements the MCP
+ * specification itself; both lock out a client configured by hand (see
+ * `staticClient` below). This module supplies the storage and the one decision
+ * neither version can make: whether the human said yes.
  */
 
 /** The only thing this bridge can hand out access to. */
 export const SCOPE = "mcp";
+
+/** A client that was configured by hand instead of registering itself. */
+export type StaticClient = {
+  clientId: string;
+  clientSecret: string;
+  redirectUris: string[];
+};
+
+/** Length-safe: timingSafeEqual throws on different lengths, which would itself leak. */
+export function sameSecret(a: string, b: string): boolean {
+  const x = Buffer.from(a);
+  const y = Buffer.from(b);
+  return x.length === y.length && crypto.timingSafeEqual(x, y);
+}
 
 const ACCESS_TTL_MS = 12 * 60 * 60 * 1000;
 const REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -78,7 +97,10 @@ export type OAuthEvent = { type: "authorizations"; pending: PendingAuthorization
 
 type ConsentRequest = PendingAuthorization & {
   state?: string;
+  /** Empty when the client sent no PKCE challenge, which only a confidential client may do. */
   codeChallenge: string;
+  /** What the client asked for, kept only to say so when it is not what it gets. */
+  requestedScopes: string[];
   resource?: URL;
   decision: Consent | null;
   /** Minted on approval, then handed to the browser that is waiting on the poll. */
@@ -125,8 +147,22 @@ export class OAuthProvider implements OAuthServerProvider {
   /** Where the human approves, named on the consent page. */
   private readonly uiUrl: string;
 
-  constructor(opts: { uiUrl: string }) {
+  constructor(opts: { uiUrl: string; staticClient?: StaticClient | null }) {
     this.uiUrl = opts.uiUrl;
+    if (opts.staticClient) {
+      // Registered up front, which is the whole point: the human pasted this
+      // client's credentials into the client, so the client will never call
+      // /register. Everything else about it is an ordinary registration.
+      this.clients.set(opts.staticClient.clientId, {
+        client_id: opts.staticClient.clientId,
+        client_secret: opts.staticClient.clientSecret,
+        client_name: clientNameFor(opts.staticClient.redirectUris),
+        redirect_uris: opts.staticClient.redirectUris,
+        grant_types: ["authorization_code", "refresh_token"],
+        response_types: ["code"],
+        token_endpoint_auth_method: "client_secret_post",
+      });
+    }
   }
 
   get clientsStore(): OAuthRegisteredClientsStore {
@@ -248,15 +284,17 @@ export class OAuthProvider implements OAuthServerProvider {
   /**
    * Start an authorization. This does not answer with a redirect, because the
    * answer is not this server's to give: it renders a page and waits for the
-   * human. Refusing here (rather than in the browser) is what makes an
-   * unsupported scope a proper OAuth error redirect.
+   * human.
+   *
+   * A scope this bridge does not have is *narrowed*, not refused, which RFC 6749
+   * §3.3 allows and which is the only thing that lets a hosted client through:
+   * such a client asks for whatever its own platform taught it to ask for
+   * (`openid`, say) without having been told what this bridge offers. Narrowing
+   * can only ever grant less than was requested, and the consent page says when
+   * that happened.
    */
   async authorize(client: OAuthClientInformationFull, params: AuthorizationParams, res: Response): Promise<void> {
     const requested = params.scopes ?? [];
-    const unsupported = requested.filter((s) => !this.scopes.includes(s));
-    if (unsupported.length) {
-      throw new InvalidScopeError(`This bridge does not have the scope "${unsupported.join(", ")}".`);
-    }
     if (this.pending().length >= MAX_PENDING) {
       throw new TemporarilyUnavailableError(
         "Too many authorization requests are already waiting for the human who owns this bridge.",
@@ -269,7 +307,8 @@ export class OAuthProvider implements OAuthServerProvider {
       clientId: client.client_id,
       clientName: client.client_name?.trim() || client.client_id,
       redirectUri: params.redirectUri,
-      scopes: requested.length ? requested : this.scopes,
+      scopes: this.scopes,
+      requestedScopes: requested.filter((s) => !this.scopes.includes(s)),
       createdAt: now,
       expiresAt: now + CONSENT_TTL_MS,
       state: params.state,
@@ -284,6 +323,11 @@ export class OAuthProvider implements OAuthServerProvider {
     res.status(200).type("html").send(consentPage(req, this.uiUrl));
   }
 
+  /**
+   * The challenge stored with a code, or an empty string when the client sent
+   * none. `src/oauth-http.ts` turns that into the PKCE decision: required from a
+   * public client, optional for one that authenticates with a secret.
+   */
   async challengeForAuthorizationCode(
     _client: OAuthClientInformationFull,
     authorizationCode: string,
@@ -315,8 +359,8 @@ export class OAuthProvider implements OAuthServerProvider {
     if (redirectUri !== undefined && redirectUri !== entry.redirectUri) {
       throw new InvalidGrantError("redirect_uri does not match the authorization request");
     }
-    // PKCE itself is checked by the SDK's token handler before it gets here, using
-    // the challenge returned above. Deliberately not re-implemented.
+    // PKCE was already checked by the caller, which is where the decision belongs:
+    // it needs the client, to know whether a challenge was even required.
     return this.issue(client.client_id, entry.scopes, entry.resource);
   }
 
@@ -382,6 +426,22 @@ export class OAuthProvider implements OAuthServerProvider {
 }
 
 /**
+ * A pre-registered client has no name of its own to offer - it never goes through
+ * registration - so it is named after where it sends the human back. That is the
+ * part the human typed in when configuring it, so it is the part they recognise.
+ */
+function clientNameFor(redirectUris: string[]): string {
+  for (const uri of redirectUris) {
+    try {
+      return new URL(uri).host;
+    } catch {
+      /* not a URL: fall through to the next one */
+    }
+  }
+  return "a client configured by hand";
+}
+
+/**
  * The page the client's browser lands on.
  *
  * It deliberately has no Allow button. This page is served from whatever address
@@ -392,6 +452,11 @@ export class OAuthProvider implements OAuthServerProvider {
  */
 function consentPage(req: ConsentRequest, uiUrl: string): string {
   const poll = `/oauth/pending?id=${encodeURIComponent(req.id)}`;
+  // Only shown when it differs, so the common case stays quiet.
+  const narrowed = req.requestedScopes.length
+    ? `<p class="state">It also asked for <code>${esc(req.requestedScopes.join(" "))}</code>, which
+       this bridge does not have and will not grant.</p>`
+    : "";
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -439,6 +504,7 @@ function consentPage(req: ConsentRequest, uiUrl: string): string {
   <p class="where">Approve or deny it on your own machine, at
      <a href="${esc(uiUrl)}">${esc(uiUrl)}</a>. This page cannot approve anything itself, and no one
      else can reach that one.</p>
+${narrowed}
   <p class="state" id="state">Waiting for your decision&hellip;</p>
 </main>
 <script>

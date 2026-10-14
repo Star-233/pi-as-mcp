@@ -330,6 +330,45 @@ const ENTRIES = [
   unsafe.dom.window.close();
 }
 
+// ------------------------------------------------- composer vs approval console
+/*
+ * The page runs for two different reasons now: the human channel is on, or --oauth
+ * is and the page is only where an authorization gets approved. In the second case
+ * there is no agent listening, so a message typed into the box would go nowhere -
+ * the composer is hidden, by a class, and what is asserted is the *computed* display
+ * (a textContent check is exactly what let the invisible countdown ship).
+ */
+{
+  const INFO_OFF = {
+    ...INFO, human: false, humanUI: true, httpTokenSet: false,
+    oauth: { enabled: true, issuer: "https://bridge.example/",
+      grants: { clients: 1, pending: 0, accessTokens: 0, refreshTokens: 0 } },
+  };
+  const hosted = await boot();
+  hosted.w.fetch = async () => ({ ok: true, status: 200, json: async () => INFO_OFF, text: async () => "" });
+  hosted.w.eval("loadInfo()");
+  await new Promise((r) => setTimeout(r, 40));
+  const doc = hosted.w.document;
+  const footer = doc.querySelector("footer");
+  const display = hosted.w.getComputedStyle(footer).display;
+  check("no composer when no agent is listening", display === "none", `computed display: ${display}`);
+  check("the console says which job it is here for",
+    doc.getElementById("side").textContent.includes("--human"));
+  check("and the empty timeline says what will appear in it",
+    doc.getElementById("log").textContent.includes("connected client"),
+    doc.getElementById("log").textContent.slice(0, 60));
+  hosted.dom.window.close();
+
+  // The other half: with the human channel on the composer is there, so the check
+  // above is about the flag and not about a CSS rule that hides it either way.
+  const talking = await boot();
+  talking.w.eval("loadInfo()");
+  await new Promise((r) => setTimeout(r, 40));
+  const shown = talking.w.getComputedStyle(talking.w.document.querySelector("footer")).display;
+  check("with --human the composer is back", shown === "flex", `computed display: ${shown}`);
+  talking.dom.window.close();
+}
+
 // ------------------------------------------------------- without the libraries
 {
   const { dom, w, es } = await boot(false);

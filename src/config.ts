@@ -8,8 +8,16 @@ export type Config = {
   approve: string[];
   deny: string[];
   blockMs: number;
-  /** Expose the human channel (human_say/ask/wait, the web UI, approval gate). Off by default. */
+  /** Expose the human channel (human_say/ask/wait, the approval gate). Off by default. */
   human: boolean;
+  /**
+   * Whether the local web UI runs. Not the same question as `human`: a hosted client
+   * (Gemini's "custom connected app") is configured by pasting credentials into *it*,
+   * so the flow needs the page that carries Allow/Deny without anybody having asked
+   * for the human channel. `--oauth` therefore starts the UI too, and the UI is then
+   * an approval console rather than a conversation.
+   */
+  humanUI: boolean;
   uiPort: number;
   uiHost: string;
   uiToken: string;
@@ -25,6 +33,16 @@ export type Config = {
    * the client actually reached - not the loopback address the bridge binds.
    */
   issuer: string;
+  /**
+   * Redirect URIs for one pre-registered confidential client. A client that is
+   * configured by hand instead of registering itself needs credentials *from* here
+   * and needs this bridge to be told where it may send the code - the client will
+   * not ask, and its URI cannot be guessed.
+   */
+  oauthRedirects: string[];
+  /** Pinned credentials for that client, so a restart does not invalidate the paste. */
+  oauthClientId: string;
+  oauthClientSecret: string;
   serverName: string;
 };
 
@@ -98,6 +116,7 @@ export function loadConfig(argv: string[]): Config {
     deny,
     blockMs: num(str(f["block-ms"], env.PI_AS_MCP_BLOCK_MS ?? ""), 90000),
     human,
+    humanUI: human || oauth,
     uiPort: num(str(f["ui-port"], env.PI_AS_MCP_UI_PORT ?? ""), 8790),
     uiHost: str(f["ui-host"], env.PI_AS_MCP_UI_HOST ?? "127.0.0.1"),
     uiToken: str(f["ui-token"], env.PI_AS_MCP_UI_TOKEN ?? ""),
@@ -107,6 +126,12 @@ export function loadConfig(argv: string[]): Config {
     httpToken: str(f.token, env.PI_AS_MCP_TOKEN ?? ""),
     oauth,
     issuer: str(f.issuer, env.PI_AS_MCP_ISSUER ?? ""),
+    oauthRedirects: list(
+      str(f["oauth-redirect"], env.PI_AS_MCP_OAUTH_REDIRECT ?? "") || undefined,
+      [],
+    ),
+    oauthClientId: str(f["oauth-client-id"], env.PI_AS_MCP_OAUTH_CLIENT_ID ?? ""),
+    oauthClientSecret: str(f["oauth-client-secret"], env.PI_AS_MCP_OAUTH_CLIENT_SECRET ?? ""),
     serverName: PROJECT,
   };
 }

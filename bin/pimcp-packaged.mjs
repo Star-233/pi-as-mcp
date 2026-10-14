@@ -57,7 +57,18 @@ Passed through to the bridge:
                        and the approval gate. Off by default.
   --oauth              Serve an OAuth 2.1 authorization server in front of /mcp,
                        so a client can authorize itself instead of being handed a
-                       token. Needs --human: you approve each client by hand.
+                       token. ON by default; --no-oauth turns it off.
+  --no-oauth           Do not run the authorization server.
+  --oauth-redirect <uri>
+                       Register ONE client allowed to return to this URI, and print
+                       the client id and secret to paste into that client's own OAuth
+                       settings. This is how a hosted client (Gemini's "custom
+                       connected app") is added: it never registers itself.
+                       Comma-separated for several URIs.
+  --oauth-client-id <id>
+  --oauth-client-secret <secret>
+                       Pin those credentials, so a restart does not invalidate a pair
+                       already pasted into a client. Needs --oauth-redirect.
   --issuer <url>       The URL clients reach, e.g. https://mcp.example.com. Only
                        with --oauth. Defaults to the quick-tunnel hostname.
   --approve <tools>    Require human approval before these tools run, e.g. bash.
@@ -75,7 +86,11 @@ const PASSTHROUGH_BOOL_FLAGS = new Set(["--human", "--oauth"]);
 
 function parseArgs(argv) {
   const opts = {
-    tunnel: true, open: true, human: false, oauth: false,
+    tunnel: true, open: true, human: false,
+    // On by default, like the checkout launcher: a remote client needs some way in,
+    // and an authorization it grants itself beats a token pasted between two chats.
+    oauth: true,
+    oauthRedirects: [], clientId: null, clientSecret: null,
     root: process.cwd(), token: null, issuer: null, port: 8777, uiPort: 8790,
     passthrough: [], help: false,
   };
@@ -91,19 +106,48 @@ function parseArgs(argv) {
     else if (arg === "--tunnel") opts.tunnel = true;
     else if (arg === "--no-open") opts.open = false;
     else if (arg === "--open") opts.open = true;
+    else if (arg === "--human") opts.human = true;
     else if (arg === "--no-human") opts.human = false;
+    else if (arg === "--oauth") opts.oauth = true;
+    else if (arg === "--no-oauth") opts.oauth = false;
     else if (arg === "--root") opts.root = path.resolve(next());
     else if (arg === "--token") opts.token = next();
     else if (arg === "--port") opts.port = Number(next());
     else if (arg === "--ui-port") opts.uiPort = Number(next());
     else if (arg === "--issuer") opts.issuer = next();
+    else if (arg === "--oauth-redirect") opts.oauthRedirects.push(...next().split(",").map((s) => s.trim()).filter(Boolean));
+    else if (arg === "--oauth-client-id") opts.clientId = next();
+    else if (arg === "--oauth-client-secret") opts.clientSecret = next();
     else if (PASSTHROUGH_VALUE_FLAGS.has(arg)) opts.passthrough.push(arg, next());
-    else if (PASSTHROUGH_BOOL_FLAGS.has(arg)) {
-      opts.passthrough.push(arg);
-      if (arg === "--human") opts.human = true;
-      if (arg === "--oauth") opts.oauth = true;
-    } else if (arg.startsWith("--")) opts.passthrough.push(arg);
+    else if (PASSTHROUGH_BOOL_FLAGS.has(arg)) opts.passthrough.push(arg);
+    else if (arg.startsWith("--")) opts.passthrough.push(arg);
     else throw new Error(`unknown argument: ${arg}`);
+  }
+  // Forward the resolved values rather than what was typed, so a later --no-human
+  // cannot leave an --oauth behind that the bridge would then have to reject.
+  if (opts.human) opts.passthrough.push("--human");
+  if (opts.clientId || opts.clientSecret) {
+    if (!opts.oauthRedirects.length) {
+      throw new Error(
+        "--oauth-client-id/--oauth-client-secret name the client that --oauth-redirect registers, " +
+          "so they need --oauth-redirect too.",
+      );
+    }
+    if (!opts.clientId || !opts.clientSecret) {
+      throw new Error(
+        "--oauth-client-id and --oauth-client-secret have to be given together: pinning one and " +
+          "minting the other would break the pair a client has already been configured with.",
+      );
+    }
+  }
+  if (opts.oauth) {
+    opts.passthrough.push("--oauth");
+    if (opts.oauthRedirects.length) {
+      opts.passthrough.push("--oauth-redirect", opts.oauthRedirects.join(","));
+      opts.clientId = opts.clientId || `pimcp-${randomBytes(9).toString("base64url")}`;
+      opts.clientSecret = opts.clientSecret || randomBytes(32).toString("base64url");
+      opts.passthrough.push("--oauth-client-id", opts.clientId, "--oauth-client-secret", opts.clientSecret);
+    }
   }
   return opts;
 }
@@ -349,9 +393,13 @@ async function main() {
       ? "REACHABLE FROM THE INTERNET"
       : opts.tunnel ? "LOCALHOST ONLY — the tunnel did not come up" : "LOCALHOST ONLY";
 
+    // The UI runs when the human channel is on, and also when only --oauth is: it is
+    // where an authorization is approved, and the two reasons read differently.
     const humanBlock = opts.human
       ? `\n  Human channel — open this, it is where the agent talks to you:\n      ${uiUrl}\n`
-      : `\n  Human channel: off. Restart with --human for human_say/ask/wait and the web UI.\n`;
+      : opts.oauth
+        ? `\n  Approve access here — this page is the only place an authorization can be granted:\n      ${uiUrl}\n`
+        : `\n  Human channel: off. Restart with --human for human_say/ask/wait and the web UI.\n`;
     // What the server will advertise, not what the launcher was handed: the server
     // normalizes this with `new URL(...)` (adding the root slash) and falls back to
     // loopback when no issuer is passed, so the banner mirrors both or it prints a
@@ -359,9 +407,14 @@ async function main() {
     const advertisedIssuer = opts.oauth
       ? new URL(issuer ?? `http://127.0.0.1:${port}`).href
       : null;
+    // A client that registers itself needs none of this; one configured by hand needs
+    // all of it, and this is the only copy that exists, so it is printed in full.
+    const clientBlock = opts.oauth && opts.oauthRedirects.length
+      ? `\n  Client credentials — paste these into the client's own OAuth settings, then add the\n  redirect URI it shows you below to that client's allowed list:\n      client id      ${opts.clientId}\n      client secret  ${opts.clientSecret}\n      redirects to   ${opts.oauthRedirects.join("\n                     ")}\n`
+      : "";
     const oauthBlock = opts.oauth
-      ? `\n  OAuth is on. A client that speaks it needs only the URL above, and you approve it\n  in the human UI. Anything else can use the bearer token instead.\n      issuer: ${advertisedIssuer}\n`
-      : `\n  OAuth is off, so the client pastes the bearer token above. To let a client authorize\n  itself instead — nothing to copy, you approve it by hand — restart with these and\n  nothing else:\n      --human --oauth\n`;
+      ? `\n  OAuth is on. A client that speaks it needs only the URL above, and you approve it\n  in the human UI. Anything else can use the bearer token instead.\n      issuer: ${advertisedIssuer}\n${clientBlock}`
+      : `\n  OAuth is off, so the client pastes the bearer token above. To let a client authorize\n  itself instead — nothing to copy, you approve it by hand — restart with these and\n  nothing else:\n      --oauth\n`;
 
     process.stdout.write(rule(`pi-as-mcp is ready — ${scope}`));
     process.stdout.write(`
@@ -378,7 +431,9 @@ ${oauthBlock}${humanBlock}
     process.stdout.write(rule("Ctrl-C stops the bridge and the tunnel"));
     process.stdout.write("\n");
 
-    if (opts.open && opts.human) openBrowser(uiUrl);
+    // The UI is load-bearing whenever it runs: with --oauth it is where the human
+    // approves, and an approval nobody notices is a client that hangs.
+    if (opts.open && (opts.human || opts.oauth)) openBrowser(uiUrl);
   } catch (e) {
     process.stderr.write(`\n  ${e.message}\n`);
     shutdown(1);

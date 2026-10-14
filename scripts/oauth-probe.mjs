@@ -14,6 +14,11 @@ import path from "node:path";
  * nothing" and "the page a client's browser lands on cannot approve anything" are
  * the checks worth having.
  *
+ * The last section runs a *second* server, configured the way a hosted client
+ * needs (a pre-registered confidential client, no --human). That is the shape a
+ * product like Gemini's "custom connected app" is added in, and it is deliberately
+ * not the shape the rest of this file uses.
+ *
  * Usage: node scripts/oauth-probe.mjs
  */
 
@@ -34,7 +39,7 @@ const logs = [];
 child.stderr.on("data", (d) => logs.push(d.toString()));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function waitForPort(port, timeoutMs = 60000) {
+async function waitForPort(child, port, logs, timeoutMs = 60000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (child.exitCode !== null) throw new Error(`the server exited early (code ${child.exitCode})\n${logs.join("")}`);
@@ -48,7 +53,7 @@ async function waitForPort(port, timeoutMs = 60000) {
   }
   throw new Error(`the server never listened on port ${port}\n${logs.join("")}`);
 }
-await waitForPort(PORT);
+await waitForPort(child, PORT, logs);
 
 let failures = 0;
 const check = (name, ok, detail = "") => {
@@ -73,8 +78,8 @@ const postForm = (url, fields, headers = {}) =>
     redirect: "manual",
   });
 
-async function mcp(method, params, token) {
-  const res = await fetch(`${BASE}/mcp`, {
+async function mcp(base, method, params, token) {
+  const res = await fetch(`${base}/mcp`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -132,6 +137,14 @@ async function authorize(clientId, { challenge } = {}) {
 
 const pending = (id) => get(`${BASE}/oauth/pending?id=${encodeURIComponent(id)}`).then((r) => r.json());
 const exchange = (fields) => postForm(`${BASE}/token`, fields);
+
+/** The human clicking Allow (or Deny) on the local UI, at `uiBase`. */
+const approve = (uiBase, id, allow = true) =>
+  fetch(`${uiBase}/oauth/decision`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ id, allow }),
+  });
 
 try {
   console.log("--- discovery ---");
@@ -194,17 +207,9 @@ try {
     JSON.stringify(info.oauth?.grants));
 
   console.log("\n--- approving ---");
-  const decided = await fetch(`${UI_BASE}/oauth/decision`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ id: auth.id, allow: true }),
-  });
+  const decided = await approve(UI_BASE, auth.id);
   check("the human UI can approve it", decided.status === 200, `HTTP ${decided.status}`);
-  const again = await fetch(`${UI_BASE}/oauth/decision`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ id: auth.id, allow: true }),
-  });
+  const again = await approve(UI_BASE, auth.id);
   check("approving twice is refused, not honoured twice", again.status === 409, `HTTP ${again.status}`);
 
   const allowed = await pending(auth.id);
@@ -237,20 +242,20 @@ try {
     `HTTP ${replay.status} ${JSON.stringify(replay.body)}`);
 
   console.log("\n--- the access token actually works ---");
-  const call = await mcp("tools/list", {}, tokens.body.access_token);
+  const call = await mcp(BASE, "tools/list", {}, tokens.body.access_token);
   check("an OAuth access token is accepted at /mcp",
     call.http === 200 && Array.isArray(call.msg?.result?.tools) && call.msg.result.tools.length > 0,
     call.http === 200 ? `${call.msg?.result?.tools?.length} tools` : JSON.stringify(call));
-  const whoami = await mcp("initialize", {
+  const whoami = await mcp(BASE, "initialize", {
     protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "oauth-probe", version: "1" },
   }, tokens.body.access_token);
   check("and answers a real MCP handshake", whoami.msg?.result?.serverInfo?.name === "pi-as-mcp",
     JSON.stringify(whoami.msg?.result?.serverInfo));
 
-  const staticStill = await mcp("tools/list", {}, TOKEN);
+  const staticStill = await mcp(BASE, "tools/list", {}, TOKEN);
   check("the static bearer token still works alongside OAuth", staticStill.http === 200);
 
-  const bogus = await mcp("tools/list", {}, "not-a-real-token");
+  const bogus = await mcp(BASE, "tools/list", {}, "not-a-real-token");
   check("an invented token is still refused", bogus.http === 401, `HTTP ${bogus.http}`);
 
   console.log("\n--- refresh ---");
@@ -277,10 +282,7 @@ try {
   console.log("\n--- PKCE and scopes ---");
   const second = pkce();
   const auth2 = await authorize(clientId, { challenge: second.challenge });
-  await fetch(`${UI_BASE}/oauth/decision`, {
-    method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ id: auth2.id, allow: true }),
-  });
+  await approve(UI_BASE, auth2.id);
   const code2 = new URL((await pending(auth2.id)).redirect).searchParams.get("code");
   const wrongVerifier = await exchange({
     grant_type: "authorization_code", code: code2,
@@ -290,20 +292,31 @@ try {
     wrongVerifier.status === 400 && /code_verifier/.test(wrongVerifier.body.error_description ?? ""),
     `HTTP ${wrongVerifier.status} ${JSON.stringify(wrongVerifier.body)}`);
 
-  const badScope = await get(`${BASE}/authorize?response_type=code&client_id=${clientId}` +
-    `&redirect_uri=${encodeURIComponent(REDIRECT)}&code_challenge=${pkce().challenge}` +
-    `&code_challenge_method=S256&scope=admin`);
-  check("an unsupported scope is refused as a proper OAuth error redirect",
-    badScope.status === 302 &&
-      new URL(badScope.headers.get("location")).searchParams.get("error") === "invalid_scope",
-    `${badScope.status} ${badScope.headers.get("location")}`);
+  // A hosted client asks for whatever its own platform taught it to ask for, so a
+  // scope this bridge does not have is narrowed rather than refused - RFC 6749 §3.3
+  // allows issuing less than was requested. What it must never do is grant more, so
+  // what is asserted is the scope on the token, not just the page.
+  const broader = pkce();
+  const asked = await get(`${BASE}/authorize?response_type=code&client_id=${clientId}` +
+    `&redirect_uri=${encodeURIComponent(REDIRECT)}&code_challenge=${broader.challenge}` +
+    `&code_challenge_method=S256&state=s9&scope=admin`);
+  const askedPage = await asked.text();
+  check("an unknown scope is narrowed, not an error", asked.status === 200, `HTTP ${asked.status}`);
+  check("the page says what will not be granted", askedPage.includes("admin"), "consent page");
+  const askedId = askedPage.match(/\/oauth\/pending\?id=([A-Za-z0-9_-]+)/)?.[1] ?? null;
+  await approve(UI_BASE, askedId);
+  const askedCode = new URL((await pending(askedId)).redirect).searchParams.get("code");
+  const narrowed = await exchange({
+    grant_type: "authorization_code", code: askedCode,
+    code_verifier: broader.verifier, client_id: clientId, redirect_uri: REDIRECT,
+  }).then(async (r) => ({ status: r.status, body: await r.json() }));
+  check("and the token carries only the scope this bridge has",
+    narrowed.status === 200 && narrowed.body.scope === "mcp",
+    `HTTP ${narrowed.status} ${JSON.stringify(narrowed.body.scope)}`);
 
   console.log("\n--- denying ---");
   const auth3 = await authorize(clientId);
-  const denied = await fetch(`${UI_BASE}/oauth/decision`, {
-    method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ id: auth3.id, allow: false }),
-  });
+  const denied = await approve(UI_BASE, auth3.id, false);
   check("the human UI can deny it", denied.status === 200, `HTTP ${denied.status}`);
   const deniedStatus = await pending(auth3.id);
   check("a denial comes back as access_denied and carries no code",
@@ -314,10 +327,7 @@ try {
 
   const unknown = await pending("made-up-id");
   check("an unknown request id reveals nothing", unknown.state === "unknown", JSON.stringify(unknown));
-  const forgedDecision = await fetch(`${UI_BASE}/oauth/decision`, {
-    method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ id: "made-up-id", allow: true }),
-  });
+  const forgedDecision = await approve(UI_BASE, "made-up-id");
   check("a forged decision is refused", forgedDecision.status === 409, `HTTP ${forgedDecision.status}`);
 
   console.log("\n--- untrusted text on the consent page ---");
@@ -334,6 +344,139 @@ try {
   failures++;
 } finally {
   child.kill();
+  await sleep(200);
+}
+
+/**
+ * A second server, configured the way a *hosted* client has to be.
+ *
+ * Gemini's "custom connected app" asks the human for a client id, a client secret
+ * and a redirect URI, which means the client never calls /register and is never
+ * told what this bridge's scope is called. So this is the shape that has to work:
+ * a pre-registered confidential client, no --human (the UI is only an approval
+ * console here), and no PKCE - the client sends no code_challenge and no
+ * code_verifier at all.
+ */
+const PORT2 = 8811, UI2 = 8812;
+const BASE2 = `http://127.0.0.1:${PORT2}`;
+const UI2_BASE = `http://127.0.0.1:${UI2}`;
+const HOSTED_REDIRECT = "https://oauth-redirect.example.com/r/bridge-probe";
+const CLIENT_ID = "pimcp-probe-client";
+const CLIENT_SECRET = "probe-client-secret";
+
+const hosted = spawn(process.execPath,
+  ["src/index.ts", "--root", root, "--http", "--port", String(PORT2), "--ui-port", String(UI2),
+   "--oauth", "--oauth-redirect", HOSTED_REDIRECT,
+   "--oauth-client-id", CLIENT_ID, "--oauth-client-secret", CLIENT_SECRET],
+  { stdio: ["ignore", "pipe", "pipe"] });
+const hostedLogs = [];
+hosted.stderr.on("data", (d) => hostedLogs.push(d.toString()));
+
+try {
+  await waitForPort(hosted, PORT2, hostedLogs);
+
+  console.log("\n--- a client configured by hand: no PKCE, no registration ---");
+  check("--oauth works without --human", hostedLogs.join("").includes("approval UI:"),
+    hostedLogs.join("").split("\n").find((l) => l.includes("human channel"))?.trim() ?? "");
+
+  const hostedInfo = await fetch(`${UI2_BASE}/info`).then((r) => r.json());
+  check("the page is up and says it is standing in for approvals only",
+    hostedInfo.oauth?.enabled === true && hostedInfo.human === false,
+    JSON.stringify({ oauth: hostedInfo.oauth?.enabled, human: hostedInfo.human }));
+  check("and one client is already registered", hostedInfo.oauth?.grants?.clients === 1,
+    JSON.stringify(hostedInfo.oauth?.grants));
+
+  // No code_challenge at all - this is the whole point of the section.
+  const noPkce = await get(`${BASE2}/authorize?response_type=code&client_id=${CLIENT_ID}` +
+    `&redirect_uri=${encodeURIComponent(HOSTED_REDIRECT)}&state=hosted-1&scope=openid%20email`);
+  const noPkcePage = await noPkce.text();
+  check("a client that sends no PKCE still gets the consent page",
+    noPkce.status === 200, `HTTP ${noPkce.status}`);
+  check("the card names the client by where it redirects",
+    noPkcePage.includes("oauth-redirect.example.com"), "consent page");
+  const hostedId = noPkcePage.match(/\/oauth\/pending\?id=([A-Za-z0-9_-]+)/)?.[1] ?? null;
+
+  const hostedPending = await get(`${BASE2}/oauth/pending?id=${hostedId}`).then((r) => r.json());
+  check("it is waiting for the human", hostedPending.state === "pending", JSON.stringify(hostedPending));
+
+  await approve(UI2_BASE, hostedId);
+  const hostedStatus = await get(`${BASE2}/oauth/pending?id=${hostedId}`).then((r) => r.json());
+  const hostedCode = new URL(hostedStatus.redirect).searchParams.get("code");
+  check("approving hands the browser a code", Boolean(hostedCode),
+    JSON.stringify(hostedStatus).slice(0, 120));
+
+  const hostedTokens = await postForm(`${BASE2}/token`, {
+    grant_type: "authorization_code", code: hostedCode, client_id: CLIENT_ID,
+    client_secret: CLIENT_SECRET, redirect_uri: HOSTED_REDIRECT,
+  }).then(async (r) => ({ status: r.status, body: await r.json() }));
+  check("the secret in the body buys tokens with no code_verifier",
+    hostedTokens.status === 200 && typeof hostedTokens.body.access_token === "string",
+    `HTTP ${hostedTokens.status} ${JSON.stringify(hostedTokens.body).slice(0, 120)}`);
+  check("and the granted scope is this bridge's own, not what was asked for",
+    hostedTokens.body.scope === "mcp", JSON.stringify(hostedTokens.body.scope));
+
+  const hostedCall = await mcp(BASE2, "initialize", {
+    protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "hosted-probe", version: "1" },
+  }, hostedTokens.body.access_token);
+  check("that token opens /mcp", hostedCall.http === 200, `HTTP ${hostedCall.http}`);
+  const hostedTools = await mcp(BASE2, "tools/list", {}, hostedTokens.body.access_token);
+  const names = (hostedTools.msg?.result?.tools ?? []).map((t) => t.name);
+  check("and offers no human_* tool, because --human was not given",
+    names.length > 0 && !names.some((n) => n.startsWith("human_")), names.join(","));
+
+  console.log("\n--- the secret is actually checked ---");
+  const wrongSecret = await postForm(`${BASE2}/token`, {
+    grant_type: "refresh_token", refresh_token: hostedTokens.body.refresh_token,
+    client_id: CLIENT_ID, client_secret: "not-the-secret",
+  }).then(async (r) => ({ status: r.status, body: await r.json() }));
+  check("a wrong client_secret is refused",
+    wrongSecret.status === 401 && wrongSecret.body.error === "invalid_client",
+    `HTTP ${wrongSecret.status} ${JSON.stringify(wrongSecret.body)}`);
+  const noSecret = await postForm(`${BASE2}/token`, {
+    grant_type: "refresh_token", refresh_token: hostedTokens.body.refresh_token, client_id: CLIENT_ID,
+  }).then(async (r) => ({ status: r.status, body: await r.json() }));
+  check("so is omitting it", noSecret.status === 401 && noSecret.body.error === "invalid_client",
+    `HTTP ${noSecret.status}`);
+
+  // HTTP Basic is the other half of RFC 6749 §2.3.1, and which one a hosted client
+  // uses is not this bridge's decision to make.
+  const basic = Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString("base64");
+  const basicRefresh = await postForm(`${BASE2}/token`,
+    { grant_type: "refresh_token", refresh_token: hostedTokens.body.refresh_token },
+    { authorization: `Basic ${basic}` }).then(async (r) => ({ status: r.status, body: await r.json() }));
+  check("the same secret as HTTP Basic also works",
+    basicRefresh.status === 200 && typeof basicRefresh.body.access_token === "string",
+    `HTTP ${basicRefresh.status} ${JSON.stringify(basicRefresh.body).slice(0, 100)}`);
+
+  console.log("\n--- a hand-configured client is still not a bypass ---");
+  const wrongRedirect = await get(`${BASE2}/authorize?response_type=code&client_id=${CLIENT_ID}` +
+    `&redirect_uri=${encodeURIComponent("https://attacker.example.com/steal")}`);
+  check("an unregistered redirect_uri is refused outright",
+    wrongRedirect.status === 400, `HTTP ${wrongRedirect.status}`);
+
+  const hostedReg = await fetch(`${BASE2}/register`, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...XFF },
+    body: JSON.stringify({ client_name: "public one", redirect_uris: [REDIRECT],
+      token_endpoint_auth_method: "none", grant_types: ["authorization_code"], response_types: ["code"] }),
+  }).then(async (r) => ({ status: r.status, body: await r.json() }));
+  check("a client can still register itself alongside the static one", hostedReg.status === 201,
+    `HTTP ${hostedReg.status}`);
+  const publicNoPkce = await get(`${BASE2}/authorize?response_type=code` +
+    `&client_id=${hostedReg.body.client_id}&redirect_uri=${encodeURIComponent(REDIRECT)}`);
+  check("but a public client without PKCE is still turned away",
+    publicNoPkce.status === 302 &&
+      new URL(publicNoPkce.headers.get("location")).searchParams.get("error") === "invalid_request",
+    `${publicNoPkce.status} ${publicNoPkce.headers.get("location")}`);
+
+  console.log("\n--- server log (hosted shape) ---");
+  console.log(hostedLogs.join("").trim());
+} catch (e) {
+  console.error("HOSTED PROBE FAILED:", e.stack ?? e.message);
+  console.error(hostedLogs.join("").trim());
+  failures++;
+} finally {
+  hosted.kill();
   await sleep(200);
 }
 

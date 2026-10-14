@@ -11,10 +11,12 @@ model-arena platform) two things on the local machine:
 1. Pi's coding tools — `read`, `write`, `edit`, `ls`, `grep`, `find`, `bash`, `powershell`.
 2. A human channel — `human_say`, `human_ask`, `human_wait`, surfaced in a local web page.
 
-It can also be its own **OAuth 2.1 authorization server** (`--oauth`), so a client that speaks
-the MCP authorization flow can be given access without a token being pasted into it. That is
-how it authenticates, not a third thing it offers; the single human is still the one who
-approves, on the same local page.
+It can also be its own **OAuth 2.1 authorization server** (`--oauth`, and on by default in
+`pimcp`), so a client can be given access without a token being pasted into it. Both shapes
+have to work: a client that registers itself from the metadata, and a client configured by
+hand — Gemini's "custom connected app", where the human pastes a client id and secret into
+*the client* and it never calls `/register`. That is how it authenticates, not a third thing
+it offers; the single human is still the one who approves, on the same local page.
 
 It is **not** an agent: there is no model and no loop. It is a tool surface plus a queue with
 exactly one human in it. **No sessions, no persistence** — the process is meant to live for one
@@ -36,8 +38,9 @@ full, including the edits that were uncommitted at the time, at tag `humanchat-f
 | `src/server.ts` | MCP server: tool list, human tools, approval gate. |
 | `src/sandbox.ts` | Path containment + deny list. |
 | `src/oauth.ts` | The OAuth 2.1 authorization server's storage and its one human decision: clients, consent requests, codes, tokens. |
+| `src/oauth-http.ts` | `/authorize` and `/token`, written here instead of taken from the SDK router: PKCE required only from a public client, and the secret accepted in the body or as HTTP Basic. Mounted before `mcpAuthRouter`, so it shadows those two paths in it. |
 | `src/human/channel.ts` | In-memory single-human channel (the whole "session" story). Chat *and* tool-call entries share one ordered list. |
-| `src/human/webui.ts`, `ui.html` | Local human UI (SSE + POST): timeline, runtime info panel, wait countdown, alerts, and the **Allow/Deny cards** that are the only way to grant an authorization. |
+| `src/human/webui.ts`, `ui.html` | The web UI (SSE + POST): timeline, runtime info panel, wait countdown, alerts, the **Allow/Deny cards** that are the only way to grant an authorization — and, when `--human` is off, the same page as an approval console with no composer. |
 | `src/human/vendor/` | marked + KaTeX, copied from `node_modules` by `npm run vendor-ui`. Committed; the UI must work with no network. |
 |`scripts/*.mjs`|Probes that drive the real server over real MCP traffic.|
 |`scripts/package.mjs`|Builds `dist/<platform>-<arch>/`: bundled JS (Pi's tools inlined) + the UI assets + a Node runtime + cloudflared, so the recipient needs nothing installed.|
@@ -65,18 +68,21 @@ npm run prompt    # print the ported system prompt
 npm run accept    # human acceptance: drives the real server, you reply in the browser
 npm run package   # build a portable dist/<platform>-<arch>/ (needs network for the Node runtime)
 npm link          # once: puts `pimcp` on PATH (run from anywhere afterwards)
-pimcp             # server + token + tunnel for the current directory
-pimcp --human     # ...and the human channel (off by default)
-pimcp --human --oauth  # ...and let clients authorize themselves against the tunnel URL
+pimcp
+pimcp --human          # ...and the human channel (off by default)
+pimcp --oauth-redirect https://oauth-redirect.googleusercontent.com/r/<app>
+                       # register a client that will never register itself; prints its
+                       # credentials to paste into it (Gemini's "custom connected app")
 
 node src/index.ts --root <dir>                                  # stdio, tools only
 node src/index.ts --root <dir> --human                          # stdio + human UI on :8790
 node src/index.ts --root <dir> --http --port 8777 --token <tok> # for a remote client
-node src/index.ts --root <dir> --human --http --oauth --issuer https://host
+node src/index.ts --root <dir> --http --oauth --issuer https://host
 ```
 
-Note `--oauth` needs BOTH `--http` and `--human`; without either it exits with a message rather
-than pretending to work. Environment variables all use the `PI_AS_MCP_` prefix.
+`--oauth` needs `--http`, and it starts the web UI — not the human channel. The UI is where
+an authorization is approved; `--human` is whether the agent can also *talk* to you. All
+environment variables use the `PI_AS_MCP_` prefix.
 
 ## Invariants — do not regress these
 
@@ -112,6 +118,16 @@ than pretending to work. Environment variables all use the `PI_AS_MCP_` prefix.
 10. **The environment prefix is `PI_AS_MCP_`.** The old `PI_MCP_*` names are gone, not aliased —
     `scripts/config-test.mjs` asserts they are no longer read. Do not reintroduce them
     "for compatibility": nothing was ever released under them.
+11. **PKCE is required from a public client and optional for one with a secret.** A client
+    configured by hand — the whole reason `src/oauth-http.ts` exists — may send no
+    `code_challenge` and no `code_verifier`; its secret plus an exactly-matched redirect URI
+    is what protects the code. A client *without* a secret must use S256, and
+    `scripts/oauth-probe.mjs` asserts both halves. Do not "simplify" this into one rule in
+    either direction: requiring PKCE locks out hosted clients, and dropping the requirement
+    for public clients removes the only thing protecting their codes.
+12. **`src/oauth-http.ts` shadows the SDK's `/authorize` and `/token`, so nothing in it may
+    call `next()`.** It is mounted first on purpose, and a `next()` would fall through to the
+    SDK handler with half-parsed state.
 
 ## Working conventions
 
@@ -143,23 +159,60 @@ port to the internet.
 ## Gotchas
 
 - **The human channel is off by default.** `--human` (or `PI_AS_MCP_HUMAN=1`) turns on the
-  `human_*` tools, the web UI, the `<human>` prompt section, and the approval gate as one
+  `human_*` tools, the `<human>` prompt section, and the approval gate as one
   unit — nothing may be half-on, because a model told about a tool it cannot call will call
   it. Verified over real stdio traffic: without the flag `tools/list` returns no `human_*`
   entries, the prompt contains no `<human>` section, and `human_say` returns an error
   naming the missing flag. Consequence for the probes: every script that exercises the
-  channel passes `--human` explicitly. `--oauth` also needs it, for its own reason: the UI is
-  where an authorization is approved.
-- **`--oauth` without `--human`/`--http`, or `--issuer` without `--oauth`, is a hard exit.**
-  Same reasoning as `--approve` below: an authorization is granted by a person clicking and
-  carried by an HTTP request, so a flag that cannot do either must not look like it worked.
+  channel passes `--human` explicitly. **The web UI is not part of this unit**, and
+  conflating the two was a real bug: it made `--oauth` impossible to use without a
+  conversation channel (see the next entry).
+- **`--oauth` starts the web UI, and that is not `--human`.** An earlier version made
+  `--oauth` without `--human` a hard exit, on the reasoning that the approval page belongs to
+  the human channel. It does not: the page is where Allow/Deny lives, and a client configured
+  by hand needs a click, not a conversation. `Config.humanUI` is the single derived answer
+  (`human || oauth`) and both the UI start and the tool-call timeline read it. The gate's
+  answer still arrives through the channel, so `--approve` still needs `--human`: the
+  composer is gone when only `--oauth` is on, and a gate nobody can answer is not a gate.
+- **A hosted client is added with credentials from here, not by registering itself.** Gemini's
+  "custom connected app" asks the human for a client id, a client secret and (behind a button)
+  a redirect URI to allow. So `--oauth-redirect <uri>` registers one confidential client whose
+  credentials the bridge mints and prints, and whose redirect URI was typed in by the human
+  rather than sent to `/register`. Two consequences worth keeping: the credentials are
+  per-run unless `--oauth-client-id`/`--oauth-client-secret` pin them, and the client's name
+  on the consent card is the redirect URI's host, because that is the part the human
+  recognises.
+- **A scope this bridge does not have is narrowed, not refused.** This reverses an earlier
+  choice that returned `invalid_scope`. A hosted client asks for whatever its own platform
+  taught it to ask for (`openid`, `email`) and has no way to learn that this bridge offers
+  only `mcp`, so refusing locks it out for a reason that is not its fault. RFC 6749 §3.3
+  allows issuing less than was requested. The invariant that survives is the other
+  direction: never grant more. `scripts/oauth-probe.mjs` asserts the scope on the *token*,
+  not just on the consent page.
+- **The SDK's `/token` cannot serve a client that skips PKCE, so `src/oauth-http.ts` does.**
+  `AuthorizationCodeGrantSchema` has `code_verifier: z.string()` — required, not optional —
+  so `provider.skipLocalPkceValidation` does not help and neither does returning an empty
+  challenge: a client that sends nothing is rejected by zod before the provider is consulted.
+  Likewise `clientAuth.js` reads the secret only from the POST body, never from Basic. Both
+  are correct for a client that implements the MCP specification itself, and both are wrong
+  for one the human configured by hand. Our handlers mount first on those two paths and the
+  SDK's are shadowed; `/register`, `/revoke` and the metadata documents are still the SDK's.
+- **`express-rate-limit` is a direct dependency now.** It was only ever reached through the
+  SDK, and the SDK's rate limiting stopped covering `/token` the moment our handler replaced
+  it. Relying on a transitive dependency for the thing standing between the internet and a
+  shell token is not a trade worth making.
+- **`--approve` without `--human` is a hard exit, not a warning.** The approval gate's whole
+  value is failing closed, and with no human there is no answerer — so a gate would have to
+  either deny everything or allow everything. Both are wrong, so `src/index.ts` exits with
+  a message instead of picking one.
 - **The advertised OAuth issuer carries a trailing slash, and that is not a bug to fix.**
   `mcpAuthRouter` writes both the issuer and the resource metadata from `URL.href`, so a bare
   origin comes out as `https://host/`. What matters is that `authorization_servers[0]` in the
   protected-resource metadata and `issuer` in the authorization-server metadata are the *same
   string* — a client resolves the metadata URL from the first and compares the second against
   it — and `scripts/oauth-probe.mjs` asserts exactly that. Changing one without the other would
-  break every client, locally invisibly.
+  break every client, locally invisibly. The launcher's banner has the same duty and mirrors
+  the normalization, because printing the raw option once produced `issuer: null`.
 - **The SDK's authorization endpoints are rate-limited, and a tunnel always sets
   `X-Forwarded-For`.** Express will not key a limiter on a header it has not been told to
   trust, which surfaces as per-request noise or a 500 that only happens behind the tunnel.
@@ -243,7 +296,11 @@ port to the internet.
   child itself (there is no supervise.mjs in a package), and finds cloudflared vendored at
   `bin/`. Keep them in sync deliberately — the flags, the readiness signal and the
   `Registered tunnel connection` check are duplicated on purpose, because a package that
-  drifts from the checkout is worse than two files.
+  drifts from the checkout is worse than two files. The duplication has grown, and it is
+  worth naming: **argument parsing, which flags default to on (`--oauth`), the minting of a
+  hand-configured client's credentials, and the wording of the ready banner** now exist
+  twice. A change to any of those four belongs in both files in the same commit; if a fifth
+  appears, extract them into a module both can import instead of adding to the pile.
 - **Vendor the portable cloudflared, not the nearest one.** The official release is
   statically linked, so it runs anywhere; a Homebrew copy points its ELF interpreter at
   `/home/linuxbrew/.linuxbrew/lib/ld.so`, which the recipient does not have, and shipping it

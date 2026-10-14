@@ -11,6 +11,7 @@ import {
 } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { loadConfig, PROJECT } from "./config.ts";
 import { OAuthProvider } from "./oauth.ts";
+import { mountOAuthEndpoints } from "./oauth-http.ts";
 import { Sandbox } from "./sandbox.ts";
 import { HumanChannel } from "./human/channel.ts";
 import { startWebUI } from "./human/webui.ts";
@@ -33,19 +34,40 @@ if (cfg.oauth && !cfg.http) {
   );
   process.exit(1);
 }
-if (cfg.oauth && !cfg.human) {
-  log(
-    "--oauth needs --human: an authorization is granted by a person clicking in the human UI, " +
-      "and with the channel off there is nobody to ask and no page to ask them on.",
-  );
-  process.exit(1);
-}
 if (cfg.issuer && !cfg.oauth) {
   log("--issuer names the OAuth authorization server, so it only means something with --oauth.");
   process.exit(1);
 }
+if (cfg.oauthRedirects.length && !cfg.oauth) {
+  log("--oauth-redirect describes a client of the authorization server, so it needs --oauth.");
+  process.exit(1);
+}
+if ((cfg.oauthClientId || cfg.oauthClientSecret) && !cfg.oauthRedirects.length) {
+  log(
+    "--oauth-client-id/--oauth-client-secret are the credentials of the client that " +
+      "--oauth-redirect registers, so they need --oauth-redirect too.",
+  );
+  process.exit(1);
+}
+if (cfg.oauthRedirects.length && Boolean(cfg.oauthClientId) !== Boolean(cfg.oauthClientSecret)) {
+  log(
+    "--oauth-client-id and --oauth-client-secret have to be given together: pinning one and " +
+      "minting the other would break the pair a client has already been configured with.",
+  );
+  process.exit(1);
+}
+for (const uri of cfg.oauthRedirects) {
+  try {
+    new URL(uri);
+  } catch {
+    log(`--oauth-redirect is not a URL: ${uri}`);
+    process.exit(1);
+  }
+}
 
-/** The authorization server's own identity, and the base of everything it advertises. */
+/**
+ * The authorization server's own identity, and the base of everything it advertises.
+ */
 let issuer: URL | null = null;
 /** The URL clients actually call. Also the audience stamped into tokens. */
 let resource: URL | null = null;
@@ -58,6 +80,20 @@ if (cfg.oauth) {
   }
   resource = new URL("/mcp", issuer);
 }
+
+/**
+ * A client that is configured by hand instead of registering itself. Its
+ * credentials have to come from somewhere, and the only somewhere is here, so
+ * they are minted unless the caller pinned them - pinning is what makes a restart
+ * survivable, since a client that already holds the old pair cannot be told.
+ */
+const staticClient = cfg.oauthRedirects.length
+  ? {
+      clientId: cfg.oauthClientId || `pimcp-${crypto.randomBytes(9).toString("base64url")}`,
+      clientSecret: cfg.oauthClientSecret || crypto.randomBytes(32).toString("base64url"),
+      redirectUris: cfg.oauthRedirects,
+    }
+  : null;
 
 log(`sandbox root: ${cfg.root}`);
 if (cfg.deny.length) log(`denied paths: ${cfg.deny.join(", ")}`);
@@ -78,6 +114,9 @@ const bridgeInfo = () => ({
   deny: cfg.deny,
   blockMs: cfg.blockMs,
   human: cfg.human,
+  // The page needs both: `humanUI` says whether there is a composer to type into,
+  // `human` whether an agent is listening on the other end of it.
+  humanUI: cfg.humanUI,
   transport: cfg.http ? "http" : "stdio",
   endpoint: cfg.http ? `http://${cfg.httpHost}:${cfg.httpPort}/mcp` : "stdio",
   httpTokenSet: Boolean(cfg.httpToken),
@@ -109,11 +148,12 @@ function sameSecret(a: string, b: string): boolean {
   return x.length === y.length && crypto.timingSafeEqual(x, y);
 }
 
-// The human channel is off by default: no UI, no human_* tools, no approval gate.
-// The bridge is then a pure tool surface, which is what a packaged deployment
-// wants; --human turns the whole human story back on.
+// The web UI is started when the human channel is on, and also when only --oauth
+// is: the UI is where an authorization is approved, which is a question about
+// who may click Allow, not about whether the agent can hold a conversation.
+// Without either flag the bridge is a pure tool surface.
 let ui: { url: string; close: () => Promise<void> } | null = null;
-if (cfg.human) {
+if (cfg.humanUI) {
   try {
     ui = await startWebUI(channel, {
       host: cfg.uiHost,
@@ -133,9 +173,13 @@ if (cfg.human) {
     );
     process.exit(1);
   }
-  log(`human channel: ${ui.url}`);
+  log(
+    cfg.human
+      ? `human channel: ${ui.url}`
+      : `approval UI: ${ui.url} (no --human, so human_say/ask/wait are off)`,
+  );
 } else {
-  log("human channel: off (start with --human to enable)");
+  log("human channel: off (start with --human to enable, or --oauth for approvals only)");
 }
 
 const pi = await loadPiTools(cfg.root, cfg.tools, sandbox);
@@ -184,7 +228,11 @@ if (cfg.http) {
   app.set("trust proxy", 1);
 
   if (cfg.oauth && issuer && resource) {
-    oauth = new OAuthProvider({ uiUrl: ui?.url ?? `http://${cfg.uiHost}:${cfg.uiPort}/` });
+    oauth = new OAuthProvider({ uiUrl: ui?.url ?? `http://${cfg.uiHost}:${cfg.uiPort}/`, staticClient });
+    // Mounted first, so these two paths win over the SDK's own. The SDK still
+    // serves discovery, registration and revocation; see src/oauth-http.ts for why
+    // /authorize and /token are not its.
+    mountOAuthEndpoints(app, oauth);
     try {
       app.use(
         mcpAuthRouter({
@@ -215,6 +263,13 @@ if (cfg.http) {
 
     log(`oauth: authorization server at ${issuer.href}`);
     log(`oauth: resource ${resource.href}, approved by hand on the human UI`);
+    if (staticClient) {
+      // Printed where a person can copy it: this pair exists to be pasted into the
+      // client's own OAuth settings, and it is the only copy there is.
+      log(`oauth: client id     ${staticClient.clientId}`);
+      log(`oauth: client secret  ${staticClient.clientSecret}`);
+      for (const uri of staticClient.redirectUris) log(`oauth: redirects to  ${uri}`);
+    }
     if (isLoopbackHost(issuer.hostname)) {
       log(
         "warning: the issuer is a loopback address, so a client off this machine cannot use it. " +
