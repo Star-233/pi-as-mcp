@@ -82,6 +82,9 @@ export function buildRules(tools: AdaptedTool[], promptGuidelines: string[] = []
   }
   for (const tool of tools) for (const rule of tool.guidelines) add(rule);
   for (const rule of promptGuidelines) add(rule);
+  if (hasBash || hasPowerShell) {
+    add("Shell commands that delete, overwrite or change system state must be narrow and reversible: name the exact paths, keep recursive deletes to what this task created, and say so before anything that cannot be undone");
+  }
   for (const rule of CLOSING_RULES) add(rule);
 
   return rules.map((rule) => `- ${rule}`).join("\n");

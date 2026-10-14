@@ -12,6 +12,7 @@ import type { HumanChannel } from "./human/channel.ts";
 import type { AdaptedTool, ContentPart } from "./pi-tools.ts";
 import { buildAgentPrompt } from "./prompt.ts";
 import { describeCall } from "./sandbox.ts";
+import { guardShell } from "./shell-guard.ts";
 import type { ToolChangeTracker } from "./tool-watch.ts";
 import { loadProjectContext } from "./context-files.ts";
 import { discoverSkills } from "./skills.ts";
@@ -322,6 +323,21 @@ export function createMcpServer(
     if (!tool && !proxied) {
       const hint = extras.aggregator?.unavailableHint(name);
       return { content: text(hint ?? `Unknown tool: ${name}`), isError: true };
+    }
+
+    // The shell guard: a hard stop for a short list of destructive shell lines.
+    // It comes before the approval gate, so no approval mode and no answer from
+    // the human lifts it. A refused call still shows on the page.
+    const shellRefusal =
+      name === "bash" || name === "powershell" ? guardShell(String(args.command ?? "")) : undefined;
+    if (shellRefusal) {
+      const message =
+        `Blocked by the shell guard [${shellRefusal.rule}]: ${shellRefusal.reason}. ` +
+        "This refusal applies in every approval mode. Reach the goal with a narrower, reversible command, or " +
+        (extras.state.human ? "ask the human with human_ask." : "say so in your answer.");
+      const callId = cfg.humanUI ? channel.toolStart(name, describeCall(name, args)) : null;
+      if (callId) channel.toolEnd(callId, false, 0, message);
+      return { content: text(message), isError: true };
     }
 
     const summary = describeCall(name, args);
