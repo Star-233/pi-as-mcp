@@ -279,6 +279,15 @@ port to the internet.
   unable to reach its own public URL at all (`ECONNRESET` / HTTP 000 for both curl and Node)
   while the tunnel is healthy for remote clients. `Registered tunnel connection` in
   cloudflared's log is the real signal; `pimcp` waits for that.
+- **Git Bash ignores the Windows system proxy, so a push from this machine needs it spelled out.**
+  Outbound 443 is blocked here and everything goes through FlClash on `127.0.0.1:7897` (Windows
+  Internet Settings: `ProxyEnable=1`, `ProxyServer=127.0.0.1:7897`). Chrome and PowerShell pick that
+  up automatically; `git` and `curl` in Git Bash do not, and fail with
+  `Failed to connect to github.com port 443` and `curl: (28) Connection timed out` while `nslookup`
+  resolves the right address — which reads like an outage rather than a missing proxy setting.
+  `https_proxy=http://127.0.0.1:7897` on that one command is the fix. Same machine, same cause as the
+  tunnel gotcha above: the proxy has to be up, and the host still cannot reach its own public URL
+  through it.
 - **Never spawn the server or cloudflared directly from the launcher.** They go through
   `bin/supervise.mjs`, which reaps them when the launcher dies. Verified: without it a hard
   kill of the launcher orphans the server *and* leaves an open public tunnel behind.
