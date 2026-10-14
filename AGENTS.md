@@ -276,7 +276,8 @@ port to the internet.
   default moved to 8777. `npm run accept` asks the OS for free ports instead of guessing.
 - **A quick-tunnel URL is printed before the edge connection exists, and you cannot trust an
   HTTP probe to tell you when it is ready.** On this machine a fake-IP TUN proxy makes the host
-  unable to reach its own public URL at all (`ECONNRESET` / HTTP 000 for both curl and Node)
+  unable to reach its own public URL at all (`ECONNRESET`, HTTP 000, or even `ENOTFOUND` — the
+  proxy also intercepts DNS, so the symptom is not always a refused connection)
   while the tunnel is healthy for remote clients. `Registered tunnel connection` in
   cloudflared's log is the real signal; `pimcp` waits for that.
 - **Git Bash ignores the Windows system proxy, so a push from this machine needs it spelled out.**

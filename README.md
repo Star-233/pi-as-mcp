@@ -402,10 +402,11 @@ nothing.
   transport makes every request after `initialize` fail with HTTP 500.
 - **`bash` on Windows** needs a real bash on `PATH`; use `powershell` otherwise.
 - **Do not judge a tunnel by knocking on its URL.** A local VPN or proxy (fake-IP TUN) can
-  leave your own machine unable to reach its own public URL — `ECONNRESET`, or HTTP 000 from
-  curl — while the tunnel is perfectly healthy for remote clients. The reliable signal is
-  cloudflared logging `Registered tunnel connection`; `pimcp` waits for exactly that and then
-  reports the local probe as advisory only.
+  leave your own machine unable to reach its own public URL — `ECONNRESET`, HTTP 000 from
+  curl, or `ENOTFOUND` when the proxy also intercepts DNS — while the tunnel is perfectly
+  healthy for remote clients. The reliable signal is cloudflared logging
+  `Registered tunnel connection`; `pimcp` waits for exactly that and then reports the local
+  probe as advisory only.
 - **A model will happily end its turn on a `no_message`.** Observed with a real client agent:
   it called `human_wait` once, read `no_message`, and ended the conversation — silently dropping
   the human, which is the exact failure this bridge exists to prevent. Prompt-only instruction was
