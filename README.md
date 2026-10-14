@@ -355,6 +355,20 @@ table row.
 | `--ui-port` / `--ui-host` | `PI_AS_MCP_UI_PORT` / `PI_AS_MCP_UI_HOST` | 8790 / 127.0.0.1 | The web UI. Runs with `--human` or `--oauth`; ignored without either. |
 | `--ui-token` | `PI_AS_MCP_UI_TOKEN` | none | Token for the UI. **Set it if you bind the UI to anything but loopback** — with `--oauth`, the UI is what can grant access here. |
 
+## Project instructions and skills
+
+**Project instructions.** `AGENTS.md` (or `CLAUDE.md`, where a directory has no `AGENTS.md`) goes into the instructions the agent is given. The bridge reads `~/.pimcp/AGENTS.md` first, then each directory from the git root down to `--root`. Nearer files come last and take precedence. A file over 64 KB is cut and marked. An edit reaches the agent once, as a notice on its next tool result, and `get_instructions` returns the current text.
+
+**Skills.** A skill is a directory with a `SKILL.md` whose frontmatter has a `name` and a `description`, both required. The bridge reads skills from, least specific first:
+
+1. its built-in skills (`builtin-skills/`, which holds `pimcp`: how to configure the bridge itself);
+2. `~/.agents/skills`;
+3. `.agents/skills`, `.claude/skills` and `.pi/skills` in each directory from the git root down to `--root`.
+
+A nearer directory wins over a farther one, and a project skill wins over a global one with the same name. The agent is given each skill's name, description and address, `skill://<name>/SKILL.md`, and reads it with `read`. Files inside a skill are `skill://<name>/<file>`. Those addresses are read-only and cannot leave their skill directory, symlinks included. A skill that breaks these rules is skipped, and the reason goes to stderr once. Frontmatter is read one `key: value` per line, and a description over 1024 characters is cut.
+
+The bridge only reads these directories. The built-in skills are served by the bridge alone and are never copied into another agent's directory.
+
 ## Security
 
 This bridge hands a remote model a shell on your machine. It is remote code execution by

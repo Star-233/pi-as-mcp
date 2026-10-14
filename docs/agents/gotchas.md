@@ -292,3 +292,5 @@
   real traffic: growth, a config reconnect, a removal, and a disconnected upstream.
 
 - **A skill is read from its frontmatter one `key: value` per line.** A multi-line value (YAML `>` or `|`) reads as empty, so the skill is skipped and the reason goes to stderr once. Keep `name` and `description` on single lines. A description over 1024 characters is cut, because it goes into every instructions request.
+
+- **The built-in skills are found beside the checkout or the bundle, and the packager must copy them.** `builtinSkillsDir` looks in `builtin-skills/` beside `src/`, then in `app/builtin-skills/` beside the bundled `index.mjs`. `scripts/package.mjs` copies the directory into `app/`. If neither exists, the bridge logs once and the `pimcp` skill is missing from the list. Nothing fails. No agent's skill folder should ever receive a copy.

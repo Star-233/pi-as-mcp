@@ -73,7 +73,7 @@ put(path.join(sub, ".agents", "skills", "quoted", "SKILL.md"), "---\nname: \"quo
 {
   const found = discoverSkills(sub, home);
   const byName = Object.fromEntries(found.map((s) => [s.name, s]));
-  const expected = ["alpha", "beta", "delta", "gamma", "near", "quoted", "shared"];
+  const expected = ["alpha", "beta", "delta", "gamma", "near", "pimcp", "quoted", "shared"];
   check("finds the global skills and every project directory", JSON.stringify(Object.keys(byName).sort()) === JSON.stringify(expected), JSON.stringify(Object.keys(byName)));
   check("skips a skill with no description, a skill with no name, and a folder with no SKILL.md",
     !("nodesc" in byName) && !("noname" in byName) && !("empty" in byName));
@@ -82,6 +82,10 @@ put(path.join(sub, ".agents", "skills", "quoted", "SKILL.md"), "---\nname: \"quo
   check("the nearer directory wins over the farther one", byName.near?.description === "near near");
   check("quoted frontmatter values are unquoted", byName.quoted?.name === "quoted" && byName.quoted?.description === "quoted description");
   check("each skill is addressed as skill://<name>/SKILL.md", byName.beta?.location === "skill://beta/SKILL.md");
+  check("the built-in pimcp skill ships with the bridge", !!byName.pimcp && fs.realpathSync(byName.pimcp.dir) === fs.realpathSync(path.join(repo, "builtin-skills", "pimcp")));
+  put(path.join(home, ".agents", "skills", "pimcp", "SKILL.md"), skillFile("pimcp", "a global copy"));
+  check("a global skill with the built-in name overrides it", discoverSkills(sub, home).find((s) => s.name === "pimcp")?.description === "a global copy");
+  fs.rmSync(path.join(home, ".agents", "skills", "pimcp"), { recursive: true, force: true });
 
   const real = (p) => fs.realpathSync(p);
   const opens = (addr) => {
@@ -169,6 +173,10 @@ try {
   check("read opens a global skill through its address", !opened.result?.isError && textOf(opened).includes("alpha body"), textOf(opened).slice(0, 200));
   const script = await call("read", { path: "skill://alpha/scripts/run.sh" });
   check("read opens a file inside a skill", textOf(script).includes("run-marker"), textOf(script).slice(0, 200));
+  const builtinDoc = await call("read", { path: "skill://pimcp/SKILL.md" });
+  check("the built-in pimcp skill opens through its address", textOf(builtinDoc).includes("Configuring the pimcp bridge"), textOf(builtinDoc).slice(0, 200));
+  check("the built-in skill is listed by its address", first.includes("<name>pimcp</name>") && first.includes("<location>skill://pimcp/SKILL.md</location>"));
+  check("the built-in skill is not copied into an agent's directory", !fs.existsSync(path.join(home, ".agents", "skills", "pimcp")));
   const unknown = await call("read", { path: "skill://nope/SKILL.md" });
   check("an unknown skill is an error that lists the known ones", unknown.result?.isError === true && textOf(unknown).includes("Unknown skill") && textOf(unknown).includes("alpha"), textOf(unknown).slice(0, 200));
   const escape = await call("read", { path: "skill://alpha/../../../secret.txt" });

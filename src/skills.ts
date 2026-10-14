@@ -5,7 +5,8 @@
  * description. They are found in the global ~/.agents/skills, and in the
  * project's .agents/skills, .claude/skills and .pi/skills, in every directory
  * from the git root down to the working root. A nearer directory wins over a
- * farther one, and a project skill wins over a global one with the same name.
+ * farther one, and a project skill wins over a global one with the same name. The skills that ship with
+ * the bridge are the least specific, so any other skill with their name wins.
  *
  * The agent is never shown a real path. The instructions list each skill as
  * skill://<name>/SKILL.md, and the read tool maps that address to a file. Files
@@ -18,7 +19,7 @@
  * every instructions request.
  */
 import { createHash } from "node:crypto";
-import { readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { scopeDirs } from "./context-files.ts";
@@ -113,13 +114,31 @@ function skillsIn(base: string): Skill[] {
   return out;
 }
 
+let builtinDir: string | null | undefined;
+
+/**
+ * The skills that ship with the bridge: builtin-skills/ beside src/ in a checkout,
+ * or app/builtin-skills/ beside the bundled index.mjs in a packaged build, which
+ * scripts/package.mjs fills. Undefined when neither exists.
+ */
+export function builtinSkillsDir(): string | undefined {
+  if (builtinDir === undefined) {
+    builtinDir = [path.join(import.meta.dirname, "builtin-skills"), path.join(import.meta.dirname, "..", "builtin-skills")]
+      .find((dir) => existsSync(dir)) ?? null;
+    if (builtinDir === null) console.error("[pi-as-mcp] built-in skills not found; the pimcp skill is unavailable");
+  }
+  return builtinDir ?? undefined;
+}
+
 /**
  * The skills that count for a working root, one per name. Least specific first, so
- * a later directory overrides an earlier one: global, then the git root down to the
+ * a later directory overrides an earlier one: built-in, global, then the git root down to the
  * working root, with the project directories in PROJECT_SKILL_DIRS order.
  */
 export function discoverSkills(root: string, home: string = os.homedir()): Skill[] {
-  const dirs = [path.join(home, ".agents", "skills")];
+  const builtin = builtinSkillsDir();
+  const dirs = builtin ? [builtin] : [];
+  dirs.push(path.join(home, ".agents", "skills"));
   for (const dir of scopeDirs(root)) {
     for (const rel of PROJECT_SKILL_DIRS) dirs.push(path.join(dir, rel));
   }

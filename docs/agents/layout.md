@@ -7,6 +7,7 @@
 | `src/prompt.ts` | Reproduces Pi's system-prompt algorithm, plus the `<human>` and skills sections. |
 | `src/server.ts` | MCP server: tool list, human tools, approval gate (one setting for every tool), upstream tool forwarding. |
 | `src/skills.ts` | Skill discovery (`~/.agents/skills`, and the project's `.agents/skills`, `.claude/skills` and `.pi/skills` from the git root down) and the `skill://` address. Read-only. A path is confined to its skill directory, after symlinks are resolved. |
+| `builtin-skills/` | Skills that ship with the bridge (`pimcp`: how to configure it). Served only by the bridge, never copied into another agent's directory. `scripts/package.mjs` copies it into `app/`. |
 | `src/sandbox.ts` | Path containment + deny list. The root is movable at runtime (`setRoot`), by the human through the web UI only. |
 | `src/config-file.ts` | The unified config file `~/.pimcp/config.json`: read (a broken file is ignored, never fatal), atomic write-back, and a debounced directory watcher. `PI_AS_MCP_CONFIG` moves it. |
 | `src/attach-mcp.ts` | Attaches other MCP servers as upstreams and re-exposes their tools with the upstream's name as a prefix. One upstream down isolates itself; a prefixed name that would shadow a bridge tool is skipped. |

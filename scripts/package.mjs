@@ -496,6 +496,8 @@ async function main() {
   await bundle(path.join(app, "index.mjs"));
   copyNodeModules(path.join(app, "node_modules"));
   copyUi(app);
+  // The skills that ship with the bridge. skills.ts looks for them beside the bundle.
+  fs.cpSync(path.join(REPO, "builtin-skills"), path.join(app, "builtin-skills"), { recursive: true });
   // The launcher that runs inside the package: bundled server + vendored
   // cloudflared + the bundled Node runtime, all found relative to itself.
   fs.copyFileSync(path.join(REPO, "bin", "pimcp-packaged.mjs"), path.join(outDir, "pimcp.mjs"));
