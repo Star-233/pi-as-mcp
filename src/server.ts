@@ -12,6 +12,8 @@ import type { HumanChannel } from "./human/channel.ts";
 import type { AdaptedTool, ContentPart } from "./pi-tools.ts";
 import { buildAgentPrompt } from "./prompt.ts";
 import { describeCall } from "./sandbox.ts";
+import type { ToolChangeTracker } from "./tool-watch.ts";
+import { loadProjectContext } from "./context-files.ts";
 
 export const INSTRUCTIONS_TOOL = "get_instructions";
 
@@ -192,6 +194,8 @@ export function createMcpServer(
     /** The sandbox is the source of truth for the current root. */
     sandbox: { root: string };
     aggregator: McpAggregator | null;
+    /** Remembers what the agent was last shown, so a change is announced once. */
+    tracker: ToolChangeTracker;
   },
 ): Server {
   // The prompt has to describe the bridge as it is *now* - the root moves at
@@ -202,7 +206,10 @@ export function createMcpServer(
     human: extras.state.human,
     approvalMode: extras.state.approvalMode,
   });
-  const buildInstructions = () => buildAgentPrompt(view(), piTools);
+  // Project instructions are read fresh for every build, so an edit shows up in
+  // get_instructions straight away.
+  const contextNow = () => loadProjectContext(view().root);
+  const buildInstructions = () => buildAgentPrompt(view(), piTools, contextNow());
   const instructions = buildInstructions();
   const server = new Server(
     { name: cfg.serverName, version: "0.1.0" },
@@ -213,23 +220,38 @@ export function createMcpServer(
   for (const t of piTools) byName[t.name] = t;
   const humans = () => (extras.state.human ? humanToolDefs() : []);
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [
-      ...piTools.map((t) => toolSchema(t.name, t.description, t.inputSchema)),
-      ...humans(),
-      // Upstream MCP tools, prefixed with their upstream's name. Listed fresh on
-      // every request, so a connect/disconnect in the UI is visible without a
-      // tools/list_changed notification the stateless transport cannot deliver.
-      ...(extras.aggregator?.tools() ?? []).map((t) =>
-        toolSchema(t.name, t.description, t.inputSchema),
-      ),
-      toolSchema(
-        INSTRUCTIONS_TOOL,
-        "Return the operating instructions for this bridge verbatim. Call once at the start of a session if your client did not already show them to you.",
-        { type: "object", properties: {} },
-      ),
-    ],
-  }));
+  // Everything the agent can call right now, built fresh on every request. The
+  // upstream part comes from the aggregator, so a connect, disconnect, or relist
+  // shows up in the next tools/list.
+  const currentTools = (): any[] => [
+    ...piTools.map((t) => toolSchema(t.name, t.description, t.inputSchema)),
+    ...humans(),
+    ...(extras.aggregator?.tools() ?? []).map((t) => toolSchema(t.name, t.description, t.inputSchema)),
+    toolSchema(
+      INSTRUCTIONS_TOOL,
+      "Return the operating instructions for this bridge verbatim, plus the live status of attached upstream MCP servers. Call once at the start of a session, and again when a tool you expect is missing or an upstream is reported unavailable.",
+      { type: "object", properties: {} },
+    ),
+  ];
+
+  // The agent is handed this list, so the tracker takes it as the baseline.
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    const tools = currentTools();
+    extras.tracker.served(tools, contextNow());
+    return { tools };
+  });
+
+  // Live upstream status, appended to get_instructions.
+  const upstreamStatus = (): string => {
+    const ups = extras.aggregator?.summary() ?? [];
+    if (ups.length === 0) return "Attached upstream MCP servers: none.";
+    const lines = ups.map((u) => {
+      const tools = u.tools.length ? ` (${u.tools.join(", ")})` : "";
+      const err = u.error ? `; error: ${u.error}` : "";
+      return `- ${u.name}: ${u.status}, ${u.toolCount} tool(s)${tools}${err}`;
+    });
+    return ["Attached upstream MCP servers (live):", ...lines].join("\n");
+  };
 
   server.setRequestHandler(ListPromptsRequestSchema, async () => ({
     prompts: [
@@ -251,12 +273,15 @@ export function createMcpServer(
     };
   });
 
-  server.setRequestHandler(CallToolRequestSchema, async (req, extra: any) => {
+  // The call handler lives in dispatchCall; the wrapper after it adds the notice.
+  const dispatchCall = async (req: any, extra: any): Promise<any> => {
     const name = req.params.name;
     const args = (req.params.arguments ?? {}) as Record<string, any>;
     const signal: AbortSignal | undefined = extra?.signal;
 
-    if (name === INSTRUCTIONS_TOOL) return { content: text(buildInstructions()) };
+    if (name === INSTRUCTIONS_TOOL) {
+      return { content: text(`${buildInstructions()}\n\n${upstreamStatus()}`) };
+    }
 
     if (name === "human_say" || name === "human_ask" || name === "human_wait") {
       if (!extras.state.human) {
@@ -292,7 +317,8 @@ export function createMcpServer(
     const proxied = extras.aggregator?.has(name) === true;
     const tool = byName[name];
     if (!tool && !proxied) {
-      return { content: text(`Unknown tool: ${name}`), isError: true };
+      const hint = extras.aggregator?.unavailableHint(name);
+      return { content: text(hint ?? `Unknown tool: ${name}`), isError: true };
     }
 
     const summary = describeCall(name, args);
@@ -364,6 +390,14 @@ export function createMcpServer(
         isError: true,
       };
     }
+  };
+
+  server.setRequestHandler(CallToolRequestSchema, async (req, extra: any) => {
+    const result = await dispatchCall(req, extra);
+    // The agent learns that the tool list moved through its next result, once.
+    const notice = extras.tracker.takeNotice(currentTools(), contextNow());
+    if (!notice) return result;
+    return { ...result, content: [...(result.content ?? []), { type: "text", text: notice }] };
   });
 
   return server;

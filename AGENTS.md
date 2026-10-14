@@ -469,6 +469,13 @@ port to the internet.
 16. **The `/ctl` endpoints are as sensitive as the OAuth decision.** They move the sandbox root and turn the approval gate off, so they are refused while the human UI is reachable from off the machine with no token — enforced, not warned about. And the sandbox root never moves by agent request: there is deliberately no tool for it, only the human's hand on the web UI.
 17. **Approval is one setting for every tool, upstreams included.** `--approve` still parses but means `approval.mode: "always"` — every call, `read` included, waits for a yes/no. A proxied upstream tool can be as much of a shell as `bash` is, so a per-tool list is a list that goes stale the moment a new tool is attached.
 
+- **A tool-list change reaches the agent through its next tool result, once.** The stateless HTTP
+  transport cannot send `tools/list_changed`, so `src/tool-watch.ts` compares the list with the last
+  one the agent was given (a `tools/list` response, or an earlier notice) and appends a
+  `[bridge notice]` to the next result. The baseline is process state, not per client: one client's
+  `tools/list` clears the news for the others. `scripts/toolchange-probe.mjs` covers the path over
+  real traffic: growth, a config reconnect, a removal, and a disconnected upstream.
+
 ## Open questions
 
 - The LICENSE is now the full Apache-2.0 text with `Copyright 2026 pi-as-mcp contributors`,

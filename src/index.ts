@@ -5,6 +5,7 @@ import process from "node:process";
 import express from "express";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { ToolChangeTracker } from "./tool-watch.ts";
 import {
   getOAuthProtectedResourceMetadataUrl,
   mcpAuthRouter,
@@ -331,7 +332,21 @@ if (cfg.blockMs > 100000) {
   );
 }
 
-const makeServer = () => createMcpServer(cfg, pi.tools, channel, { state, sandbox, aggregator });
+// One tracker for the whole process: what the agent was last shown is process-wide.
+const toolTracker = new ToolChangeTracker();
+const makeServer = () => createMcpServer(cfg, pi.tools, channel, { state, sandbox, aggregator, tracker: toolTracker });
+
+/** Two upstream configs are the same if they differ at most in the enabled flag. */
+function sameUpstream(a: McpUpstream | undefined, b: McpUpstream): boolean {
+  if (!a) return false;
+  const stable = (u: McpUpstream) =>
+    JSON.stringify(
+      Object.entries(u)
+        .filter(([k]) => k !== "enabled")
+        .sort(([x], [y]) => x.localeCompare(y)),
+    );
+  return stable(a) === stable(b);
+}
 
 /**
  * Bring the upstream set in line with the config file: connect what appeared or
@@ -345,8 +360,14 @@ async function reconcileMcps(file: BridgeConfigFile): Promise<void> {
   for (const [name, upstream] of Object.entries(desired)) {
     const current = aggregator.summary().find((u) => u.name === name);
     const connected = current?.status === "connected" || current?.status === "connecting";
+    // A connected upstream whose config changed (command, URL, headers...) is reconnected,
+    // so the file's version is the one that runs. Connect alone would be a no-op here.
+    const changed = connected && !sameUpstream(aggregator.configOf(name), upstream);
     if (upstream.enabled === false && connected) {
       await aggregator.disconnect(name);
+    } else if (upstream.enabled !== false && changed) {
+      await aggregator.disconnect(name);
+      await aggregator.connect(name, upstream, { fromConfig: true, enabled: true });
     } else if (upstream.enabled !== false && !connected) {
       await aggregator.connect(name, upstream, { fromConfig: true, enabled: true });
     }

@@ -1,6 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { McpUpstream } from "./config-file.ts";
 import type { ContentPart } from "./pi-tools.ts";
 
@@ -45,10 +46,15 @@ type Live = {
   /** Prefixed tool name -> the upstream's own name for it. */
   tools: Map<string, string>;
   definitions: ProxiedTool[];
+  /** Re-lists the upstream when it does not promise tools/list_changed. */
+  poll?: ReturnType<typeof setInterval>;
   error?: string;
   enabled: boolean;
   fromConfig: boolean;
 };
+
+/** How often to re-list an upstream that does not promise tools/list_changed. */
+const POLL_MS = 30_000;
 
 /** Prefix characters the MCP world is happy to see in a tool name. */
 function sanitize(name: string): string {
@@ -150,26 +156,18 @@ export class McpAggregator {
             });
 
       await client.connect(transport);
-      const listed = await client.listTools();
-
-      for (const tool of listed.tools ?? []) {
-        const prefixed = this.prefixed(name, tool.name);
-        if (this.opts.reserved(prefixed)) {
-          this.opts.log(`mcp upstream ${name}: tool ${tool.name} collides with a name this bridge already serves; skipped`);
-          continue;
-        }
-        live.tools.set(prefixed, tool.name);
-        live.definitions.push({
-          name: prefixed,
-          description: `[via ${name}] ${tool.description ?? tool.name}`,
-          inputSchema: tool.inputSchema ?? { type: "object" },
-        });
-      }
+      client.setNotificationHandler(ToolListChangedNotificationSchema, () => void this.relist(name));
+      this.ingest(live, (await client.listTools()).tools ?? []);
 
       live.client = client;
       live.transport = transport;
       live.status = "connected";
       live.error = undefined;
+      if (!client.getServerCapabilities()?.tools?.listChanged) {
+        // No promise to tell us about changes, so look again now and then.
+        live.poll = setInterval(() => void this.relist(name), POLL_MS);
+        live.poll.unref?.();
+      }
       this.opts.log(`mcp upstream ${name}: connected, ${live.definitions.length} tool(s)`);
       return { ok: true };
     } catch (err) {
@@ -193,11 +191,65 @@ export class McpAggregator {
     }
   }
 
+  /** Replace an upstream's tools from a fresh listing. Prefixed names that collide are skipped. */
+  private ingest(
+    live: Live,
+    tools: Array<{ name: string; description?: string; inputSchema?: unknown }>,
+  ): void {
+    live.tools.clear();
+    live.definitions = [];
+    for (const tool of tools) {
+      const prefixed = this.prefixed(live.name, tool.name);
+      if (this.opts.reserved(prefixed)) {
+        this.opts.log(`mcp upstream ${live.name}: tool ${tool.name} collides with a name this bridge already serves; skipped`);
+        continue;
+      }
+      live.tools.set(prefixed, tool.name);
+      live.definitions.push({
+        name: prefixed,
+        description: `[via ${live.name}] ${tool.description ?? tool.name}`,
+        inputSchema: tool.inputSchema ?? { type: "object" },
+      });
+    }
+  }
+
+  /** Re-list a connected upstream: on its own tools/list_changed, or on a poll if it never promises one. */
+  async relist(name: string): Promise<void> {
+    const live = this.upstreams.get(name);
+    if (!live || live.status !== "connected" || !live.client) return;
+    try {
+      const before = live.definitions.map((t) => t.name).join(",");
+      this.ingest(live, (await live.client.listTools()).tools ?? []);
+      if (live.definitions.map((t) => t.name).join(",") !== before) {
+        this.opts.log(`mcp upstream ${name}: tool list changed, now ${live.definitions.length} tool(s)`);
+      }
+    } catch (err) {
+      this.opts.log(`mcp upstream ${name}: relist failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /** The config an upstream was connected with, so the file watcher can tell whether it changed. */
+  configOf(name: string): McpUpstream | undefined {
+    return this.upstreams.get(name)?.config;
+  }
+
+  /** Why a tool name cannot be called right now, when it belongs to an upstream that is not connected. */
+  unavailableHint(name: string): string | undefined {
+    for (const u of this.upstreams.values()) {
+      if (u.status === "connected" || !name.startsWith(`${sanitize(u.name)}_`)) continue;
+      const why = u.error ? ` (${u.error})` : "";
+      return `Tool ${name} is unavailable: upstream "${u.name}" is ${u.status}${why}. Call get_instructions for the current upstream status.`;
+    }
+    return undefined;
+  }
+
   /** Take an upstream down. Its entry stays in the list as "disconnected". */
   async disconnect(name: string): Promise<void> {
     const live = this.upstreams.get(name);
     if (!live) return;
     live.status = "disconnected";
+    clearInterval(live.poll);
+    live.poll = undefined;
     live.definitions = [];
     live.tools.clear();
     live.error = undefined;

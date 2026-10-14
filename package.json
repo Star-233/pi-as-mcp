@@ -14,7 +14,7 @@
     "start": "node src/index.ts",
     "http": "node src/index.ts --http",
     "typecheck": "tsc --noEmit",
-    "test": "node scripts/config-test.mjs && node scripts/channel-probe.mjs && node scripts/probe.mjs && node scripts/http-probe.mjs && node scripts/controls-probe.mjs && node scripts/oauth-probe.mjs && node scripts/ui-probe.mjs && node scripts/ui-render-probe.mjs",
+    "test": "node scripts/config-test.mjs && node scripts/channel-probe.mjs && node scripts/probe.mjs && node scripts/http-probe.mjs && node scripts/controls-probe.mjs && node scripts/oauth-probe.mjs && node scripts/ui-probe.mjs && node scripts/ui-render-probe.mjs && node scripts/toolchange-probe.mjs && node scripts/context-probe.mjs",
     "prompt": "node scripts/show-prompt.mjs",
     "vendor-ui": "node scripts/vendor-ui.mjs",
     "accept": "node scripts/acceptance.mjs",

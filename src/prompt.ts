@@ -86,7 +86,11 @@ export function buildRules(tools: AdaptedTool[], promptGuidelines: string[] = []
   return rules.map((rule) => `- ${rule}`).join("\n");
 }
 
-export function buildPromptSections(cfg: Config, tools: AdaptedTool[]): Record<string, string> {
+export function buildPromptSections(
+  cfg: Config,
+  tools: AdaptedTool[],
+  contextFiles: Array<{ path: string; content: string; truncated: boolean }> = [],
+): Record<string, string> {
   const visible = tools.filter((t) => t.snippet);
   const toolsBlock = visible.length
     ? visible.map((t) => `- ${t.name}: ${t.snippet}`).join("\n")
@@ -94,12 +98,18 @@ export function buildPromptSections(cfg: Config, tools: AdaptedTool[]): Record<s
 
   const sections: Record<string, string> = {
     preamble: PREAMBLE,
-    tools: `${toolsBlock}\n\nIn addition to the tools above, you may have access to other custom tools depending on the project.`,
+    tools: `${toolsBlock}\n\nIn addition to the tools above, you may have access to other custom tools depending on the project. Upstream MCP tools are prefixed with their server's name (for example github_list). That list can change while you work: if a tool you expect is missing, or a call reports an upstream as unavailable, call get_instructions for the current status.`,
     rules: cfg.approvalMode === "always"
       ? `${buildRules(tools)}\n- Every tool call is held for the human's approval before it runs. A denial is their answer to that call, not a failure: acknowledge it and wait for their guidance`
       : buildRules(tools),
     cwd: cfg.root.replace(/\\/g, "/"),
   };
+  if (contextFiles.length) {
+    sections.project_instructions = [
+      "Instructions from project files (AGENTS.md or CLAUDE.md): the global file first, then from the git root down to the working root. Nearer files come later and take precedence. Follow them for work under this root.",
+      ...contextFiles.map((f) => `## ${f.path.replace(/\\/g, "/")}${f.truncated ? " (truncated)" : ""}\n\n${f.content.trim()}`),
+    ].join("\n\n");
+  }
   // The <human> section is the entire instruction surface for the human channel.
   // With the channel off it must vanish, not shrink: a model told about tools it
   // cannot call will try to call them.
@@ -108,8 +118,12 @@ export function buildPromptSections(cfg: Config, tools: AdaptedTool[]): Record<s
 }
 
 /** Render exactly the way Pi renders its transcript system message. */
-export function buildAgentPrompt(cfg: Config, tools: AdaptedTool[]): string {
-  const sections = buildPromptSections(cfg, tools);
+export function buildAgentPrompt(
+  cfg: Config,
+  tools: AdaptedTool[],
+  contextFiles: Array<{ path: string; content: string; truncated: boolean }> = [],
+): string {
+  const sections = buildPromptSections(cfg, tools, contextFiles);
   const parts: string[] = [sections.preamble];
   for (const [name, content] of Object.entries(sections)) {
     if (name === "preamble") continue;
