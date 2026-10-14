@@ -196,7 +196,7 @@ export function createMcpServer(cfg: Config, piTools: AdaptedTool[], channel: Hu
   server.setRequestHandler(ListPromptsRequestSchema, async () => ({
     prompts: [
       {
-        name: "pi_mcp_instructions",
+        name: "pi_as_mcp_instructions",
         description: "The full operating instructions for this bridge (Pi's prompt plus the human channel rules).",
         arguments: [],
       },
@@ -204,11 +204,11 @@ export function createMcpServer(cfg: Config, piTools: AdaptedTool[], channel: Hu
   }));
 
   server.setRequestHandler(GetPromptRequestSchema, async (req) => {
-    if (req.params.name !== "pi_mcp_instructions") {
+    if (req.params.name !== "pi_as_mcp_instructions") {
       throw new Error(`Unknown prompt: ${req.params.name}`);
     }
     return {
-      description: "Operating instructions for the pi-mcp bridge.",
+      description: "Operating instructions for the pi-as-mcp bridge.",
       messages: [{ role: "user", content: { type: "text", text: instructions } }],
     };
   });

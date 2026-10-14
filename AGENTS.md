@@ -5,15 +5,23 @@ Index for agents working in this repository. The full manual lives in
 
 ## What this is
 
-`pi-mcp` is a **one-shot MCP bridge**. It gives a remote agent (typically a cloud model on a
+`pi-as-mcp` is a **one-shot MCP bridge**. It gives a remote agent (typically a cloud model on a
 model-arena platform) two things on the local machine:
 
 1. Pi's coding tools — `read`, `write`, `edit`, `ls`, `grep`, `find`, `bash`, `powershell`.
 2. A human channel — `human_say`, `human_ask`, `human_wait`, surfaced in a local web page.
 
+It can also be its own **OAuth 2.1 authorization server** (`--oauth`), so a client that speaks
+the MCP authorization flow can be given access without a token being pasted into it. That is
+how it authenticates, not a third thing it offers; the single human is still the one who
+approves, on the same local page.
+
 It is **not** an agent: there is no model and no loop. It is a tool surface plus a queue with
 exactly one human in it. **No sessions, no persistence** — the process is meant to live for one
-sitting.
+sitting. Tokens and registered OAuth clients are in memory too, and die with it.
+
+The command is `pimcp`; the package is `pi-as-mcp`. It was called `pi-mcp` until it was
+published — see the invariant about the environment prefix before "fixing" a stray `PI_MCP_`.
 
 The predecessor (HumanChat MCP, a Python broker + TUI + Web UI) was removed. It is preserved in
 full, including the edits that were uncommitted at the time, at tag `humanchat-final`.
@@ -22,22 +30,25 @@ full, including the edits that were uncommitted at the time, at tag `humanchat-f
 
 | Path | What |
 |---|---|
-| `src/index.ts` | Entry point. Config, human UI, stdio or HTTP transport. |
+| `src/index.ts` | Entry point. Config, human UI, HTTP (an express app) or stdio transport, the bearer check, the OAuth router. |
 | `src/pi-tools.ts` | Imports Pi's tool definitions and adapts them to MCP. |
 | `src/prompt.ts` | Reproduces Pi's system-prompt algorithm, plus the `<human>` section. |
 | `src/server.ts` | MCP server: tool list, human tools, approval gate. |
 | `src/sandbox.ts` | Path containment + deny list. |
+| `src/oauth.ts` | The OAuth 2.1 authorization server's storage and its one human decision: clients, consent requests, codes, tokens. |
 | `src/human/channel.ts` | In-memory single-human channel (the whole "session" story). Chat *and* tool-call entries share one ordered list. |
-| `src/human/webui.ts`, `ui.html` | Local human UI (SSE + POST): timeline, runtime info panel, wait countdown, alerts. |
+| `src/human/webui.ts`, `ui.html` | Local human UI (SSE + POST): timeline, runtime info panel, wait countdown, alerts, and the **Allow/Deny cards** that are the only way to grant an authorization. |
 | `src/human/vendor/` | marked + KaTeX, copied from `node_modules` by `npm run vendor-ui`. Committed; the UI must work with no network. |
 |`scripts/*.mjs`|Probes that drive the real server over real MCP traffic.|
 |`scripts/package.mjs`|Builds `dist/<platform>-<arch>/`: bundled JS (Pi's tools inlined) + the UI assets + a Node runtime + cloudflared, so the recipient needs nothing installed.|
 |`src/pi-tools-entry.ts`|The bundler seam for Pi's tool modules: a literal import the tsconfig alias can resolve, so esbuild inlines them into the artifact.|
-|`bin/pimcp.mjs`|The `pimcp` launcher for a checkout: ports, token, tunnel (cloudflared on PATH), ready check, browser.|
+|`bin/pimcp.mjs`|The `pimcp` launcher for a checkout: ports, token, tunnel (cloudflared on PATH), ready check, browser. Opens the tunnel *before* the server when `--oauth` needs its hostname.|
 |`bin/pimcp-packaged.mjs`|The launcher that ships *inside* `dist/`: bundled server + vendored cloudflared, no supervise.mjs, supervises its own child.|
 | `scripts/channel-probe.mjs` | The queue semantics of the human channel: draining, ordering, stamps, the cap, the retraction case. |
+| `scripts/http-probe.mjs` | The HTTP surface and the approval gate over real traffic. |
+| `scripts/oauth-probe.mjs` | The whole authorization flow, including the negatives: a replayed code, a wrong PKCE verifier, a denial, a forged decision, an untrusted client name. |
 | `scripts/ui-probe.mjs` | Drives the UI's HTTP surface: page, vendored assets, `/info`, `/health`, the SSE stream. Asserts; exits non-zero. |
-| `scripts/ui-render-probe.mjs` | Runs the page's own inline script in jsdom against the vendored libs and asserts what it renders. |
+| `scripts/ui-render-probe.mjs` | Runs the page's own inline script in jsdom against the vendored libs and asserts what it renders, authorization cards included. |
 | `bin/supervise.mjs` | Parent-death watchdog so children cannot outlive the launcher. |
 
 ## Commands
@@ -47,7 +58,7 @@ directly via Node's type stripping — there is no build step).
 
 ```bash
 npm install
-npm test          # config defaults + stdio probe + HTTP/auth/approval probe + both UI probes
+npm test          # config defaults + stdio probe + HTTP/auth/approval probe + the OAuth flow + both UI probes
 npm run typecheck # tsc --noEmit
 npm run vendor-ui # re-copy marked + KaTeX into src/human/vendor
 npm run prompt    # print the ported system prompt
@@ -56,11 +67,16 @@ npm run package   # build a portable dist/<platform>-<arch>/ (needs network for 
 npm link          # once: puts `pimcp` on PATH (run from anywhere afterwards)
 pimcp             # server + token + tunnel for the current directory
 pimcp --human     # ...and the human channel (off by default)
+pimcp --human --oauth  # ...and let clients authorize themselves against the tunnel URL
 
 node src/index.ts --root <dir>                                  # stdio, tools only
 node src/index.ts --root <dir> --human                          # stdio + human UI on :8790
 node src/index.ts --root <dir> --http --port 8777 --token <tok> # for a remote client
+node src/index.ts --root <dir> --human --http --oauth --issuer https://host
 ```
+
+Note `--oauth` needs BOTH `--http` and `--human`; without either it exits with a message rather
+than pretending to work. Environment variables all use the `PI_AS_MCP_` prefix.
 
 ## Invariants — do not regress these
 
@@ -79,7 +95,23 @@ node src/index.ts --root <dir> --http --port 8777 --token <tok> # for a remote c
    inside the `try` in `pi-tools.ts` so the client sees `isError`, not a JSON-RPC failure.
 5. **Approval fails closed.** `--approve bash` with no human answer must deny, never run.
 6. **stdout is the stdio protocol channel.** All logging goes to stderr.
-7. **No sessions, no persistence.** Do not add a session id, a store, or a broker.
+7. **No sessions, no persistence.** Do not add a session id, a store, or a broker. OAuth state is
+   in-memory for the same reason: no token database, no persistence across a restart.
+8. **An authorization is granted only on the human UI, and only by a click.** The page at
+   `/authorize` is served from whatever address the client reached — over a tunnel, the open
+   internet — so it must never carry a control that grants access, and it does not: it shows the
+   request and waits. The decision travels through `202 POST /oauth/decision` on the local UI,
+   which is loopback-bound and can carry `--ui-token`. Do not move, mirror or "also allow" that
+   decision anywhere reachable by the client, and do not accept an OAuth answer through the
+   human channel's text box — a typed "yes" there belongs to the *tool* approval gate, and mixing
+   the two would let a message approve a shell command and an authorization at once.
+9. **The OAuth AS never invents its own issuer.** It is `--issuer`, or the tunnel hostname, or
+   loopback, and it must be the URL the client actually reached; the two metadata documents have
+   to agree on it. `scripts/oauth-probe.mjs` asserts that agreement, because a mismatch is
+   invisible locally and fatal for a remote client.
+10. **The environment prefix is `PI_AS_MCP_`.** The old `PI_MCP_*` names are gone, not aliased —
+    `scripts/config-test.mjs` asserts they are no longer read. Do not reintroduce them
+    "for compatibility": nothing was ever released under them.
 
 ## Working conventions
 
@@ -110,13 +142,33 @@ port to the internet.
 
 ## Gotchas
 
-- **The human channel is off by default.** `--human` (or `PI_MCP_HUMAN=1`) turns on the
+- **The human channel is off by default.** `--human` (or `PI_AS_MCP_HUMAN=1`) turns on the
   `human_*` tools, the web UI, the `<human>` prompt section, and the approval gate as one
   unit — nothing may be half-on, because a model told about a tool it cannot call will call
   it. Verified over real stdio traffic: without the flag `tools/list` returns no `human_*`
   entries, the prompt contains no `<human>` section, and `human_say` returns an error
   naming the missing flag. Consequence for the probes: every script that exercises the
-  channel passes `--human` explicitly.
+  channel passes `--human` explicitly. `--oauth` also needs it, for its own reason: the UI is
+  where an authorization is approved.
+- **`--oauth` without `--human`/`--http`, or `--issuer` without `--oauth`, is a hard exit.**
+  Same reasoning as `--approve` below: an authorization is granted by a person clicking and
+  carried by an HTTP request, so a flag that cannot do either must not look like it worked.
+- **The advertised OAuth issuer carries a trailing slash, and that is not a bug to fix.**
+  `mcpAuthRouter` writes both the issuer and the resource metadata from `URL.href`, so a bare
+  origin comes out as `https://host/`. What matters is that `authorization_servers[0]` in the
+  protected-resource metadata and `issuer` in the authorization-server metadata are the *same
+  string* — a client resolves the metadata URL from the first and compares the second against
+  it — and `scripts/oauth-probe.mjs` asserts exactly that. Changing one without the other would
+  break every client, locally invisibly.
+- **The SDK's authorization endpoints are rate-limited, and a tunnel always sets
+  `X-Forwarded-For`.** Express will not key a limiter on a header it has not been told to
+  trust, which surfaces as per-request noise or a 500 that only happens behind the tunnel.
+  `src/index.ts` sets `trust proxy 1` for that single hop, and the OAuth probe sends the header
+  on every authorization request so this cannot regress unnoticed.
+- **express and its types.** The HTTP transport is a real express app now, because
+  `mcpAuthRouter` needs one. `express` is a dependency (it is also the SDK's), and
+  `@types/express` is a devDependency — without it `tsc` fails on our own `import express`,
+  even though `skipLibCheck` hides the same missing types inside the SDK's `.d.ts` files.
 - **`--approve` without `--human` is a hard exit, not a warning.** The approval gate's whole
   value is failing closed, and with no human there is no answerer — so a gate would have to
   either deny everything or allow everything. Both are wrong, so `src/index.ts` exits with
@@ -162,6 +214,24 @@ port to the internet.
   `downloadNode` drops all three and then removes `lib/` once it is empty. Leaving them in
   was the single largest avoidable cost in the package, and nothing in `src/` or the
   packaged launcher references npm — worth re-checking if that ever changes.
+- **Only Pi's lazy wasm belongs in the package's `node_modules`, and it belongs under the bare
+  name.** esbuild inlines every static import — Pi's tool graph, the MCP SDK, and express when
+  `--oauth` is built in — so a packaged build with `@modelcontextprotocol` deleted outright
+  served initialize, `read`, `bash`, `human_say` and a complete OAuth flow; its 5.6MB copy was
+  dead weight (`KEEP` in `scripts/package.mjs` no longer copies it). The one real exception is
+  `@silvia-odwyer/photon-node`, which Pi reaches with a dynamic `import()` that fires only when
+  an image needs shrinking; npm installed it *nested* under Pi, and the bundle asks for it by
+  bare name from `app/index.mjs`, so Node starts that lookup at `app/node_modules/@silvia-odwyer`
+  and never sees the nested copy. The symptom was `ERR_MODULE_NOT_FOUND` from
+  `node -e "import('@silvia-odwyer/photon-node')"` inside a built `app/` that otherwise worked
+  perfectly; `KEEP` is now `[source, destination]` pairs whose destination is the bare name.
+  Measured together: 155.1MB → 150.7MB, `app/` 12M → 5.9M.
+- **Git Bash's `tar` is MSYS GNU tar, and it reads `D:\…` as `host:path`.** Extracting the Node
+  runtime on Windows therefore dies with `tar: Cannot connect to D: resolve failed` in Git Bash
+  while the identical command works in PowerShell. Put Windows' own `bsdtar` first for the build
+  (`PATH="/c/Windows/System32:$PATH" node scripts/package.mjs --win32-x64`) — and invoke `node`
+  directly rather than `PATH=… npm run package:win`, because npm is itself a shell shim and
+  fails first with `/bin/bash: C:/Program Files/nodejs/npm: No such file or directory`.
 - **The packaged launcher lives at the package root, so it must not `..` its way up.**
   `dist/<platform>/pimcp.mjs` finds `app/`, `runtime/` and `bin/` as siblings; a `..` makes
   it look in `dist/app/index.mjs`, which does not exist, and every run dies with "this
@@ -279,8 +349,14 @@ port to the internet.
 
 ## Open questions
 
-- The LICENSE is still Apache-2.0 naming "HumanChat MCP contributors", from the removed project.
-  It has not been changed deliberately.
+- The LICENSE is now the full Apache-2.0 text with `Copyright 2026 pi-as-mcp contributors`,
+  replacing the 19-line stub that GitHub listed as "Other". Whether GitHub's licence detection
+  now reports Apache-2.0 is only observable from the pushed repository, not locally.
 - The project was promoted from the former `pi-mcp/` subdirectory to the repository root.
   Commits before that move and the `humanchat-final` tag name paths that no longer exist in
   the working tree; use `git log --follow` and `git show humanchat-final --stat`.
+- `npm audit` reports one high-severity advisory (`brace-expansion`, quadratic-expansion DoS)
+  that resolves into Pi's *nested* `node_modules`. It is left alone deliberately: `npm audit
+  fix` would rewrite the lockfile and could move Pi itself, and the affected package is not
+  shipped in `dist/` any more — the package keeps only Pi's wasm. Re-check it whenever Pi is
+  upgraded.

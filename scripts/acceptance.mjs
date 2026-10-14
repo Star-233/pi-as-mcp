@@ -1,5 +1,5 @@
 /**
- * Human acceptance for pi-mcp. Runs the real server and drives it exactly the way a
+ * Human acceptance for pi-as-mcp. Runs the real server and drives it exactly the way a
  * remote agent would, so you only have to watch the browser and type one answer.
  *
  *   node scripts/acceptance.mjs            # waits up to 10 minutes for your reply
@@ -16,7 +16,7 @@ const autoDelay = autoIdx >= 0 ? Number(process.argv[autoIdx + 1] ?? 3) * 1000 :
 const root = path.resolve(".acceptance-tmp");
 fs.rmSync(root, { recursive: true, force: true });
 fs.mkdirSync(root, { recursive: true });
-fs.writeFileSync(path.join(root, "sample.txt"), "pi-mcp acceptance sample\n");
+fs.writeFileSync(path.join(root, "sample.txt"), "pi-as-mcp acceptance sample\n");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

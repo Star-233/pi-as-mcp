@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>pi-mcp · human channel</title>
+<title>pi-as-mcp · human channel</title>
 <link rel="stylesheet" href="vendor/katex.min.css">
 <style>
   :root {
@@ -78,6 +78,27 @@
   #toolbar .spacer { margin-left:auto; }
   #log { flex:1; overflow-y:auto; padding:14px; display:flex; flex-direction:column; gap:9px; }
   .empty { color:var(--dimmer); text-align:center; margin:auto; font-size:13px; }
+
+  /* ---------- authorization requests ----------
+     A client asking for access is not part of the conversation, so it does not go
+     in the log. It sits above it, where it cannot be scrolled away, and it is the
+     only place in this bridge where an authorization can be granted. */
+  #approvals { flex:0 0 auto; background:#151a22; border-bottom:1px solid var(--line); }
+  #approvals.hidden { display:none; }
+  .auth { display:flex; gap:12px; align-items:flex-start; padding:10px 14px; }
+  .auth + .auth { border-top:1px solid var(--line); }
+  .auth .body { flex:1; min-width:0; }
+  .auth .who { font-weight:600; }
+  .auth .who .ask { color:var(--dim); font-weight:400; }
+  .auth .what { margin-top:3px; font-size:12px; color:var(--dim); word-break:break-all; }
+  .auth .what .mono { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:11px; }
+  .auth .warn { margin-top:4px; font-size:12px; color:var(--amber); }
+  .auth .btns { flex:0 0 auto; display:flex; gap:6px; }
+  .auth button { border-radius:7px; padding:5px 13px; font-size:12px; }
+  .auth .allow { background:#1f6f3f; border:1px solid #2c8b52; color:#fff; font-weight:600; }
+  .auth .deny { background:transparent; border:1px solid var(--line2); color:var(--dim); }
+  .auth .deny:hover { color:var(--fg); }
+  .auth button:disabled { opacity:.5; cursor:default; }
 
   /* One bubble, one look. A message's kind is deliberately not rendered: a chat
      has no message types, and "the agent is waiting for you" is already carried by
@@ -157,7 +178,7 @@
 <body class="noside">
 <header>
   <button class="iconbtn" id="sidebtn" title="Toggle the runtime info panel">☰ info</button>
-  <b>pi-mcp</b><span class="sub">human channel</span>
+  <b>pi-as-mcp</b><span class="sub">human channel</span>
   <span id="countdown" class="hidden"></span>
   <button class="iconbtn" id="bell" title="Notifications and sound">🔕 alerts off</button>
   <span id="status">connecting…</span>
@@ -174,6 +195,7 @@
       <button class="iconbtn" id="scrollbtn" title="Jump to the latest">↓ latest</button>
       <button class="iconbtn" id="clearbtn" title="Clear this view (the server keeps its own list)">clear</button>
     </div>
+    <div id="approvals" class="hidden"></div>
     <div id="log"><div class="empty">No messages yet.</div></div>
   </div>
 </div>
@@ -355,8 +377,8 @@ function notify(kind, text) {
   chime(kind);
   if (window.Notification && Notification.permission === 'granted') {
     try {
-      new Notification('pi-mcp · ' + kind, {
-        body: text.slice(0, 200), tag: 'pi-mcp', renotify: true, requireInteraction: kind === 'question'
+      new Notification('pi-as-mcp · ' + kind, {
+        body: text.slice(0, 200), tag: 'pi-as-mcp', renotify: true, requireInteraction: kind === 'question'
       });
     } catch (e) { /* not every browser allows the constructor form */ }
   }
@@ -465,6 +487,86 @@ function updateTally() {
     counts.tool + ' tool calls' + (counts.err ? ' (' + counts.err + ' failed)' : '');
 }
 
+/* ---------------------------------------------------- authorization requests
+ * A remote client can ask for access, but it cannot grant itself any: the page its
+ * browser is parked on has no button, because that page is served from whatever
+ * public address the client reached. The decision is here, on a page only the
+ * human running the bridge can open.
+ *
+ * Everything on a card comes from the client's own registration, so it is set with
+ * textContent - never with innerHTML.
+ */
+var approvalsEl = document.getElementById('approvals');
+var pendingAuths = [];
+
+function authCard(p) {
+  var wrap = document.createElement('div');
+  wrap.className = 'auth';
+  var body = document.createElement('div');
+  body.className = 'body';
+  var who = document.createElement('div');
+  who.className = 'who';
+  who.textContent = p.clientName;
+  var ask = document.createElement('span');
+  ask.className = 'ask';
+  ask.textContent = ' wants access';
+  who.appendChild(ask);
+  var what = document.createElement('div');
+  what.className = 'what';
+  what.textContent = 'scope ' + (p.scopes || []).join(' ') + ' · redirects to ';
+  var redir = document.createElement('span');
+  redir.className = 'mono';
+  redir.textContent = p.redirectUri;
+  what.appendChild(redir);
+  var warn = document.createElement('div');
+  warn.className = 'warn';
+  warn.textContent = 'Allowing this hands it a shell on this computer.';
+  body.appendChild(who); body.appendChild(what); body.appendChild(warn);
+
+  var btns = document.createElement('div');
+  btns.className = 'btns';
+  var allow = document.createElement('button');
+  allow.type = 'button'; allow.className = 'allow'; allow.textContent = 'Allow';
+  var deny = document.createElement('button');
+  deny.type = 'button'; deny.className = 'deny'; deny.textContent = 'Deny';
+  allow.onclick = function () { decideAuth(p.id, true, allow, deny); };
+  deny.onclick = function () { decideAuth(p.id, false, allow, deny); };
+  btns.appendChild(allow); btns.appendChild(deny);
+
+  wrap.appendChild(body); wrap.appendChild(btns);
+  return wrap;
+}
+
+function renderAuths() {
+  approvalsEl.textContent = '';
+  if (!pendingAuths.length) { approvalsEl.classList.add('hidden'); return; }
+  approvalsEl.classList.remove('hidden');
+  for (var i = 0; i < pendingAuths.length; i++) approvalsEl.appendChild(authCard(pendingAuths[i]));
+}
+
+function setAuths(list, announce) {
+  var before = pendingAuths.length;
+  pendingAuths = list || [];
+  renderAuths();
+  if (announce && pendingAuths.length > before) {
+    notify('question', 'A client is asking for access: ' + pendingAuths[pendingAuths.length - 1].clientName);
+  }
+}
+
+function decideAuth(id, allow, allowBtn, denyBtn) {
+  allowBtn.disabled = true; denyBtn.disabled = true;
+  fetch('/oauth/decision?token=' + encodeURIComponent(token), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id: id, allow: allow })
+  }).then(function (r) {
+    // 409 means the request expired while the card was on screen. The card is stale
+    // either way, and the next authorizations event will drop it.
+    if (!r.ok) { allowBtn.disabled = false; denyBtn.disabled = false; }
+    loadInfo();
+  }).catch(function () { allowBtn.disabled = false; denyBtn.disabled = false; });
+}
+
 /* ---------------------------------------------------------------- status */
 function setStatus(waiting, dead) {
   lastStatusKind = waiting;
@@ -504,6 +606,8 @@ function connect() {
     } else if (msg.type === 'state') {
       deadline = msg.deadline || null;
       setStatus(msg.waiting, false);
+    } else if (msg.type === 'authorizations') {
+      setAuths(msg.pending, true);
     }
   };
   es.onerror = function () {
@@ -532,7 +636,10 @@ function updateSide() {
   var side = document.getElementById('side');
   if (!info) { side.innerHTML = '<div class="note">loading…</div>'; return; }
   var snap = info.channel || {};
-  var noToken = info.transport === 'http' && !info.httpTokenSet;
+  var oauthOn = Boolean(info.oauth && info.oauth.enabled);
+  // An authorization server is a way to authenticate, so its presence is what makes
+  // an unset bearer token acceptable rather than alarming.
+  var noToken = info.transport === 'http' && !info.httpTokenSet && !oauthOn;
   var h = '';
   h += '<h3>connection</h3>';
   h += kv('state', '<span class="dot ' + (es && es.readyState === 1 ? 'ok' : 'bad') + '"></span>' +
@@ -559,8 +666,22 @@ function updateSide() {
   h += kv('mcp token', info.httpTokenSet ? '<span class="chip good">set</span>'
     : (info.transport === 'http' ? '<span class="chip bad">not set</span>' : '<span class="chip">n/a (stdio)</span>'));
   h += kv('ui token', info.uiTokenSet ? '<span class="chip good">set</span>' : '<span class="chip">not set</span>');
+  if (oauthOn) {
+    var g = info.oauth.grants || {};
+    h += kv('oauth', '<span class="chip good">on</span>');
+    h += kv('issuer', esc(info.oauth.issuer || ''), true);
+    h += kv('clients', String(g.clients || 0) + ' registered');
+    h += kv('tokens', String(g.accessTokens || 0) + ' access · ' + String(g.refreshTokens || 0) + ' refresh');
+    h += kv('waiting', String(g.pending || 0) + ' awaiting you');
+  } else {
+    h += kv('oauth', '<span class="chip">off</span>');
+  }
   if (noToken) h += '<div class="warnbox">The MCP port is serving a shell with <b>no token</b>. ' +
     'Anyone who can reach it can run commands here. Restart with <code>--token</code>.</div>';
+  if (oauthOn && info.oauth.uiExposed) h += '<div class="warnbox">The human UI is reachable from ' +
+    'off this machine and has <b>no token</b>, and the UI is where authorizations are approved. ' +
+    'Anyone who can reach it can authorize themselves. Bind it to loopback or set ' +
+    '<code>--ui-token</code>.</div>';
   side.innerHTML = h;
 }
 function loadInfo() {

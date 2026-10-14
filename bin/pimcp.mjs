@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * pimcp — run the pi-mcp bridge from any directory with one short command.
+ * pimcp — run the pi-as-mcp bridge from any directory with one short command.
  *
  *   cd <the directory the agent should work in>
  *   pimcp
@@ -24,7 +24,7 @@ const ENTRY = path.join(REPO, "src", "index.ts");
 const SUPERVISE = path.join(REPO, "bin", "supervise.mjs");
 
 const HELP = `
-pimcp — start the pi-mcp bridge for the current directory.
+pimcp — start the pi-as-mcp bridge for the current directory.
 
 USAGE
   pimcp [options]
@@ -45,6 +45,12 @@ Passed through to the server:
   --human              Expose the human channel: human_say/ask/wait, the web UI and
                        the approval gate. Off by default.
   --no-human           Explicitly keep it off (the default; spelled out for clarity).
+  --oauth              Serve an OAuth 2.1 authorization server in front of /mcp, so a
+                       client can authorize itself instead of being handed a token.
+                       Needs --human: you approve each client by hand in the UI.
+  --issuer <url>       The URL clients reach, e.g. https://mcp.example.com. Only with
+                       --oauth. Defaults to the quick-tunnel hostname, or to
+                       http://127.0.0.1:<port> when there is no tunnel.
   --approve <tools>    Require human approval before these tools run, e.g. bash.
                        Needs --human.
   --deny <paths>       Extra paths to refuse even inside the root.
@@ -60,17 +66,20 @@ const PASSTHROUGH_VALUE_FLAGS = new Set([
   "--host",
   "--ui-host",
   "--ui-token",
+  "--issuer",
 ]);
 // Value-less flags the server understands, forwarded verbatim.
-const PASSTHROUGH_BOOL_FLAGS = new Set(["--human"]);
+const PASSTHROUGH_BOOL_FLAGS = new Set(["--human", "--oauth"]);
 
 function parseArgs(argv) {
   const opts = {
     tunnel: true,
     open: true,
     human: false,
+    oauth: false,
     root: process.cwd(),
     token: null,
+    issuer: null,
     port: 8777,
     uiPort: 8790,
     passthrough: [],
@@ -93,10 +102,12 @@ function parseArgs(argv) {
     else if (arg === "--token") opts.token = next();
     else if (arg === "--port") opts.port = Number(next());
     else if (arg === "--ui-port") opts.uiPort = Number(next());
+    else if (arg === "--issuer") opts.issuer = next();
     else if (PASSTHROUGH_VALUE_FLAGS.has(arg)) opts.passthrough.push(arg, next());
     else if (PASSTHROUGH_BOOL_FLAGS.has(arg)) {
       opts.passthrough.push(arg);
-      opts.human = true;
+      if (arg === "--human") opts.human = true;
+      if (arg === "--oauth") opts.oauth = true;
     }
     else if (arg.startsWith("--")) opts.passthrough.push(arg);
     else throw new Error(`unknown argument: ${arg}`);
@@ -141,7 +152,7 @@ function supervise(command, args, opts) {
   );
 }
 
-function startServer({ root, port, uiPort, token, passthrough }) {
+function startServer({ root, port, uiPort, token, issuer, passthrough }) {
   const args = [
     ENTRY,
     "--root", root,
@@ -151,11 +162,12 @@ function startServer({ root, port, uiPort, token, passthrough }) {
     "--token", token,
     ...passthrough,
   ];
+  if (issuer) args.push("--issuer", issuer);
   const child = supervise(process.execPath, args, { stdio: ["ignore", "pipe", "pipe"], cwd: root });
   let buf = "";
   const ready = new Promise((resolve, reject) => {
     const check = () => {
-      if (buf.includes("[pi-mcp] ready")) resolve();
+      if (buf.includes("[pi-as-mcp] ready")) resolve();
     };
     child.stdout.on("data", (d) => {
       buf += d.toString();
@@ -221,6 +233,22 @@ function startTunnel(port) {
   setTimeout(() => { if (settleRegistered) { settleRegistered(false); settleRegistered = null; } }, 60000);
 
   return { child, url, registered, log: () => log };
+}
+
+/**
+ * Start a quick tunnel and wait for its hostname. A missing hostname is reported
+ * here, once, because it is the same outcome whether the tunnel was opened early
+ * (for --oauth) or late.
+ */
+async function openTunnel(port) {
+  process.stdout.write("  opening a Cloudflare tunnel…\n");
+  const t = startTunnel(port);
+  const base = await t.url;
+  if (!base) {
+    process.stderr.write("  could not get a tunnel URL — falling back to localhost only.\n");
+    process.stderr.write(t.log().split("\n").slice(-10).map((l) => `    ${l}\n`).join(""));
+  }
+  return { tunnel: t, base };
 }
 
 /**
@@ -309,23 +337,35 @@ async function main() {
   let probeNote = null;
 
   try {
-    process.stdout.write(`\n  starting pi-mcp for ${opts.root}\n`);
-    server = startServer({ root: opts.root, port, uiPort, token, passthrough: opts.passthrough });
+    process.stdout.write(`\n  starting pi-as-mcp for ${opts.root}\n`);
+
+    // With --oauth the tunnel has to be up *before* the server starts. The
+    // authorization server advertises a single issuer in its metadata, and a client
+    // checks that against the address it actually reached — so it has to be the
+    // public hostname, which exists only once cloudflared has printed it.
+    let publicBase = null;
+    if (opts.tunnel && opts.oauth && !opts.issuer) {
+      const opened = await openTunnel(port);
+      tunnel = opened.tunnel;
+      publicBase = opened.base;
+    }
+
+    const issuer = opts.oauth ? opts.issuer ?? publicBase : null;
+    server = startServer({ root: opts.root, port, uiPort, token, issuer, passthrough: opts.passthrough });
     await server.ready;
 
     let publicMcp = null;
     if (opts.tunnel) {
-      process.stdout.write("  opening a Cloudflare tunnel…\n");
-      tunnel = startTunnel(port);
-      const base = await tunnel.url;
-      if (!base) {
-        process.stderr.write("  could not get a tunnel URL — falling back to localhost only.\n");
-        process.stderr.write(tunnel.log().split("\n").slice(-10).map((l) => `    ${l}\n`).join(""));
-      } else {
-        process.stdout.write(`  tunnel url ${base} — waiting for the edge connection…\n`);
+      if (!tunnel) {
+        const opened = await openTunnel(port);
+        tunnel = opened.tunnel;
+        publicBase = opened.base;
+      }
+      if (publicBase) {
+        process.stdout.write(`  tunnel url ${publicBase} — waiting for the edge connection…\n`);
         tunnelUp = await tunnel.registered;
         if (tunnelUp) {
-          publicMcp = `${base}/mcp`;
+          publicMcp = `${publicBase}/mcp`;
           const probe = await probeOnce(publicMcp);
           probeNote = probe.status
             ? `verified reachable from this machine (HTTP ${probe.status})`
@@ -354,14 +394,21 @@ async function main() {
       : `
   Human channel: off. Restart with --human for human_say/ask/wait and the web UI.
 `;
-    process.stdout.write(rule(`pi-mcp is ready — ${scope}`));
+    const oauthBlock = opts.oauth
+      ? `
+  OAuth is on. A client that speaks it needs only the URL above, and you approve it
+  in the human UI. Anything else can use the bearer token instead.
+      issuer: ${issuer}
+`
+      : "";
+    process.stdout.write(rule(`pi-as-mcp is ready — ${scope}`));
     process.stdout.write(`
   MCP URL to paste into the client:
       ${mcpUrl}
 
   Authorization header:
       Bearer ${token}
-${humanBlock}
+${oauthBlock}${humanBlock}
   The agent can read and write under:
       ${opts.root}
 `);

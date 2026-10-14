@@ -2,6 +2,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import type { HumanChannel, ChannelEvent } from "./channel.ts";
+import type { OAuthProvider } from "../oauth.ts";
 
 export type WebUIOptions = {
   host: string;
@@ -13,6 +14,15 @@ export type WebUIOptions = {
    * is true now.
    */
   info: () => Record<string, unknown>;
+  /**
+   * The authorization server, when --oauth is on. This page is the only place an
+   * authorization can be granted, which is the whole reason a client's browser is
+   * told to wait here instead of being handed a button of its own.
+   *
+   * A getter, because the HTTP listener - and with it the provider - is built
+   * after the UI is already listening. Nothing reads this until a request arrives.
+   */
+  readonly oauth?: Pick<OAuthProvider, "pending" | "decide" | "subscribe"> | null;
 };
 
 const VENDOR_DIR = path.join(import.meta.dirname, "vendor");
@@ -126,10 +136,53 @@ export function startWebUI(channel: HumanChannel, opts: WebUIOptions) {
       };
       send({ type: "history", ...channel.snapshot(), entries: channel.history() });
       const unsubscribe = channel.subscribe((e: ChannelEvent) => send(e));
+      // Pending authorizations are not part of the message timeline - they are not
+      // something the agent said - so they travel on their own event. The page
+      // keeps whatever it last received.
+      send({ type: "authorizations", pending: opts.oauth?.pending() ?? [] });
+      const unsubscribeAuth = opts.oauth
+        ? opts.oauth.subscribe((e) => send(e))
+        : () => {};
       const beat = setInterval(() => res.write(": ping\n\n"), 15000);
       req.on("close", () => {
         clearInterval(beat);
         unsubscribe();
+        unsubscribeAuth();
+      });
+      return;
+    }
+
+    /**
+     * Answer an authorization request. Only reachable here: a client's browser is
+     * parked on the bridge's public origin and told to wait, because a button there
+     * would be one anybody who found the URL could press.
+     */
+    if (req.method === "POST" && url.pathname === "/oauth/decision") {
+      if (!opts.oauth) {
+        res.writeHead(404, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "no authorization server is running" }));
+        return;
+      }
+      let body = "";
+      req.on("data", (c) => {
+        body += c;
+        if (body.length > 1_000_000) req.destroy();
+      });
+      req.on("end", () => {
+        let id = "";
+        let allow = false;
+        try {
+          const parsed = JSON.parse(body || "{}");
+          id = typeof parsed.id === "string" ? parsed.id : "";
+          allow = parsed.allow === true;
+        } catch {
+          /* ignore malformed bodies, and deny below */
+        }
+        const decided = id !== "" && opts.oauth!.decide(id, allow);
+        // 409 rather than 404 when the request is gone: the card was real and is
+        // now stale, which is what the page should say.
+        res.writeHead(decided ? 200 : 409, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: decided, allow }));
       });
       return;
     }

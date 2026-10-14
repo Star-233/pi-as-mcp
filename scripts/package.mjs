@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * package.mjs — build a portable pi-mcp bundle somebody else can run.
+ * package.mjs — build a portable pi-as-mcp bundle somebody else can run.
  *
  *   node scripts/package.mjs            # for the host platform
  *   node scripts/package.mjs --win32    # cross-build for Windows from Linux
@@ -166,27 +166,39 @@ async function bundle(outFile) {
 }
 
 /**
- * The parts of node_modules the bridge still loads at runtime. Pi's tool modules
- * are bundled into index.mjs (see `bundle`), so its 143MB tree is not copied.
+ * The parts of node_modules the bundle still resolves at runtime, as
+ * [source, destination] pairs relative to node_modules.
  *
- * What remains is the MCP SDK (deep-imported by src/server.ts, and esbuild cannot
- * inline those because the SDK is resolved through its own exports map at
- * runtime) plus Pi's lazy image-resize wasm, which it `import()`s only when an
- * image actually needs shrinking.
+ * Only one thing qualifies. esbuild inlines every static import — Pi's tool graph,
+ * the MCP SDK, and (for `--oauth`) express with it — so nothing else needs to sit
+ * beside the bundle: a packaged build with `@modelcontextprotocol` removed entirely
+ * served initialize, read, bash, human_say and a complete OAuth flow, which is why
+ * its 5.6MB copy is gone.
+ *
+ * The exception is Pi's image-resize wasm, which Pi reaches with a dynamic
+ * `import()` that fires only when an image actually needs shrinking; a bundled wasm
+ * blob cannot be lazily loaded, so it has to stay a real file. npm installed it
+ * *nested* under Pi, but the bundle asks for it by bare name from `app/index.mjs`,
+ * and Node starts that lookup at `app/node_modules/@silvia-odwyer` — the nested
+ * location is not on that path at all, so it is copied to the name that resolves.
+ * (Found by running `node -e "import('@silvia-odwyer/photon-node')"` inside the
+ * built app/ directory: ERR_MODULE_NOT_FOUND.)
  *
  * This is a copy, not a symlink or a hoist: the recipient's machine has no npm.
  */
-const KEEP_TOP = [
-  "@earendil-works/pi-coding-agent/node_modules/@silvia-odwyer",
-  "@modelcontextprotocol",
+const KEEP = [
+  [
+    "@earendil-works/pi-coding-agent/node_modules/@silvia-odwyer/photon-node",
+    "@silvia-odwyer/photon-node",
+  ],
 ];
 
 function copyNodeModules(dest) {
   const src = path.join(REPO, "node_modules");
-  for (const name of KEEP_TOP) {
-    const from = path.join(src, name);
-    if (!fs.existsSync(from)) continue;
-    fs.cpSync(from, path.join(dest, name), { recursive: true });
+  for (const [from, to] of KEEP) {
+    const source = path.join(src, from);
+    if (!fs.existsSync(source)) continue;
+    fs.cpSync(source, path.join(dest, to), { recursive: true });
   }
 }
 
@@ -202,7 +214,7 @@ function writeLaunchers(target, outDir, appDir, runtimeDir) {
     fs.writeFileSync(
       path.join(outDir, "pimcp.cmd"),
       `@echo off
-rem pi-mcp launcher. Everything it needs is in this directory, including the Node
+rem pi-as-mcp launcher. Everything it needs is in this directory, including the Node
 rem runtime and cloudflared, so this does not touch PATH and needs nothing installed.
 setlocal
 set "PIMCP_HOME=%~dp0"
@@ -214,7 +226,7 @@ set "PIMCP_HOME=%~dp0"
     fs.writeFileSync(
       launcher,
       `#!/usr/bin/env bash
-# pi-mcp launcher. Everything it needs is in this directory.
+# pi-as-mcp launcher. Everything it needs is in this directory.
 #
 # Deliberately uses no external commands: parameter expansion instead of dirname,
 # and an absolute path to the bundled runtime instead of PATH lookup. The point of

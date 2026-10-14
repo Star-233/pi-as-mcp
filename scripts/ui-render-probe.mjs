@@ -34,11 +34,17 @@ function check(name, ok, detail = "") {
 }
 
 const INFO = {
-  serverName: "pi-mcp", version: "0.1.0", root: "D:\\tmp\\root",
+  serverName: "pi-as-mcp", version: "0.1.0", root: "D:\\tmp\\root",
   tools: ["read", "bash"], approve: [], deny: [".ssh"], blockMs: 90000, human: true,
   transport: "http", endpoint: "http://127.0.0.1:8800/mcp",
   httpTokenSet: true, uiTokenSet: true, pid: 1, platform: "win32 x64", node: "v24.9.0",
+  oauth: { enabled: false },
   channel: { waiting: null, deadline: null, entries: 0, startedAt: Date.now() },
+};
+
+const OAUTH_INFO = {
+  ...INFO,
+  oauth: { enabled: true, issuer: "https://bridge.example/", grants: { clients: 2, pending: 1, accessTokens: 3, refreshTokens: 2 } },
 };
 
 /**
@@ -56,11 +62,16 @@ async function boot(withLibs = true) {
   // Record what the page would have alerted on, to prove kinds still mean
   // something server-side even though they no longer mean anything visually.
   notifyLog.length = 0;
-  w.fetch = async (u) => ({
-    ok: true, status: 200,
-    json: async () => (String(u).includes("/info") ? INFO : { ok: true, waiting: null, deadline: null, entries: 0, startedAt: Date.now() }),
-    text: async () => "",
-  });
+  // Every request the page makes, so a click can be checked against what it sent.
+  const calls = [];
+  w.fetch = async (u, init) => {
+    calls.push({ url: String(u), init: init || {} });
+    return {
+      ok: true, status: 200,
+      json: async () => (String(u).includes("/info") ? INFO : { ok: true, waiting: null, deadline: null, entries: 0, startedAt: Date.now() }),
+      text: async () => "",
+    };
+  };
   const sources = [];
   w.EventSource = class {
     constructor(url) { this.url = url; this.readyState = 1; sources.push(this); }
@@ -76,7 +87,7 @@ async function boot(withLibs = true) {
   }
   w.eval(inline[1]);
   await new Promise((r) => setTimeout(r, 30));
-  return { dom, w, es: sources[0] };
+  return { dom, w, es: sources[0], calls };
 }
 
 const at = Date.now();
@@ -95,7 +106,7 @@ const ENTRIES = [
 
 // ---------------------------------------------------------------- with libs
 {
-  const { dom, w, es } = await boot(true);
+  const { dom, w, es, calls } = await boot(true);
   const doc = w.document;
   // Kinds no longer reach the markup, but they must still drive the alerts - that
   // is the only remaining signal that the agent is blocked on you.
@@ -231,6 +242,89 @@ const ENTRIES = [
   es.onopen();
   check("es.onopen restores the status pill", doc.getElementById("status").textContent === "connected",
     doc.getElementById("status").textContent);
+
+  /* ------------------------------------------------------- authorizations
+   * A client asking for access is the one thing on this page that can hand away a
+   * shell, and the client's own name is attacker-chosen text. Both are checked here:
+   * that the card appears and is usable, and that the name is never treated as HTML.
+   */
+  const approvals = doc.getElementById("approvals");
+  check("no approval card until something asks", w.getComputedStyle(approvals).display === "none");
+
+  es.push({
+    type: "authorizations",
+    pending: [{
+      id: "auth-1",
+      clientName: '<img src=x onerror="window.__pwned=1">Arena agent',
+      redirectUri: "https://client.example/callback",
+      scopes: ["mcp"],
+      createdAt: Date.now(),
+      expiresAt: Date.now() + 600000,
+    }],
+  });
+  await new Promise((r) => setTimeout(r, 30));
+
+  check("an authorization request is shown", w.getComputedStyle(approvals).display !== "none",
+    "computed display: " + w.getComputedStyle(approvals).display);
+  const card = approvals.querySelector(".auth");
+  check("the card names the client", card?.textContent.includes("Arena agent"), card?.textContent.slice(0, 60));
+  check("the card says where it would redirect", card?.textContent.includes("https://client.example/callback"));
+  check("the card says what approving means", /shell on this computer/.test(card?.textContent ?? ""));
+  check("a hostile client name is text, not markup",
+    approvals.querySelectorAll("img").length === 0 && w.__pwned === undefined);
+  check("the request raised the alert", notifyLog.includes("question"), notifyLog.join(","));
+
+  const allowBtn = card.querySelector(".allow");
+  const denyBtn = card.querySelector(".deny");
+  check("the card offers both answers", allowBtn?.textContent === "Allow" && denyBtn?.textContent === "Deny");
+  allowBtn.click();
+  await new Promise((r) => setTimeout(r, 30));
+  const decision = calls.find((c) => c.url.includes("/oauth/decision"));
+  check("Allow posts the decision to the bridge", Boolean(decision) && decision.init.method === "POST");
+  check("the decision carries the request id and says yes",
+    JSON.parse(decision?.init.body ?? "{}").id === "auth-1" &&
+      JSON.parse(decision?.init.body ?? "{}").allow === true, decision?.init.body);
+
+  es.push({ type: "authorizations", pending: [] });
+  await new Promise((r) => setTimeout(r, 30));
+  check("the card goes away once it is answered",
+    w.getComputedStyle(approvals).display === "none",
+    "computed display: " + w.getComputedStyle(approvals).display);
+
+  /* ------------------------------------------------------------ oauth panel */
+  const oauthBoot = await boot(true);
+  oauthBoot.w.fetch = async () => ({ ok: true, status: 200, json: async () => OAUTH_INFO, text: async () => "" });
+  oauthBoot.w.eval("loadInfo()");
+  await new Promise((r) => setTimeout(r, 50));
+  const oauthSide = oauthBoot.w.document.getElementById("side").textContent;
+  check("the panel reports the authorization server", oauthSide.includes("https://bridge.example/"), oauthSide.slice(0, 80));
+  check("the panel counts registered clients and live tokens",
+    oauthSide.includes("2 registered") && oauthSide.includes("3 access"), oauthSide.slice(0, 120));
+
+  // An authorization server is itself a way to authenticate, so an unset bearer token
+  // is no longer the alarm it would otherwise be.
+  const quiet = await boot(true);
+  quiet.w.fetch = async () => ({ ok: true, status: 200, json: async () => ({ ...OAUTH_INFO, httpTokenSet: false }), text: async () => "" });
+  quiet.w.eval("loadInfo()");
+  await new Promise((r) => setTimeout(r, 50));
+  check("no token warning when OAuth is carrying the authentication",
+    !quiet.w.document.querySelector("#side .warnbox"),
+    quiet.w.document.getElementById("side").textContent.slice(0, 60));
+
+  // ...but a UI that others can reach, where authorizations are approved, is one.
+  const exposed = await boot(true);
+  exposed.w.fetch = async () => ({
+    ok: true, status: 200,
+    json: async () => ({ ...OAUTH_INFO, oauth: { ...OAUTH_INFO.oauth, uiExposed: true } }),
+    text: async () => "",
+  });
+  exposed.w.eval("loadInfo()");
+  await new Promise((r) => setTimeout(r, 50));
+  check("an off-machine human UI is called out",
+    /authorize themselves/.test(exposed.w.document.querySelector("#side .warnbox")?.textContent ?? ""));
+  oauthBoot.dom.window.close();
+  quiet.dom.window.close();
+  exposed.dom.window.close();
 
   dom.window.close();
   unsafe.dom.window.close();

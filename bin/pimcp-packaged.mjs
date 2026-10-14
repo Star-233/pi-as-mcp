@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * pimcp — launcher for a *packaged* pi-mcp (dist/<platform>-<arch>/).
+ * pimcp — launcher for a *packaged* pi-as-mcp (dist/<platform>-<arch>/).
  *
  * This is the entry point the packaged launchers (pimcp.cmd / pimcp.sh) run. It
  * differs from bin/pimcp.mjs, which is for the development checkout:
@@ -16,6 +16,7 @@
  *   ./pimcp.sh                    # tunnel + human channel
  *   ./pimcp.sh --no-tunnel        # localhost only
  *   ./pimcp.sh --human --approve bash
+ *   ./pimcp.sh --human --oauth    # clients authorize themselves
  *
  * Everything else (--root, --port, --token, --tools, …) behaves exactly as the
  * unpackaged bridge does.
@@ -34,7 +35,7 @@ const HOME = path.dirname(fileURLToPath(import.meta.url));
 const SERVER = path.join(HOME, "app", "index.mjs");
 
 const HELP = `
-pimcp — start this packaged pi-mcp bridge for the current directory.
+pimcp — start this packaged pi-as-mcp bridge for the current directory.
 
 USAGE
   pimcp [options]
@@ -54,6 +55,11 @@ OPTIONS
 Passed through to the bridge:
   --human              Expose the human channel: human_say/ask/wait, the web UI
                        and the approval gate. Off by default.
+  --oauth              Serve an OAuth 2.1 authorization server in front of /mcp,
+                       so a client can authorize itself instead of being handed a
+                       token. Needs --human: you approve each client by hand.
+  --issuer <url>       The URL clients reach, e.g. https://mcp.example.com. Only
+                       with --oauth. Defaults to the quick-tunnel hostname.
   --approve <tools>    Require human approval before these tools run, e.g. bash.
                        Needs --human.
   --tools <list>       Expose only this comma-separated subset.
@@ -63,13 +69,14 @@ Passed through to the bridge:
 
 const PASSTHROUGH_VALUE_FLAGS = new Set([
   "--approve", "--deny", "--tools", "--block-ms", "--host", "--ui-host", "--ui-token",
+  "--issuer",
 ]);
-const PASSTHROUGH_BOOL_FLAGS = new Set(["--human"]);
+const PASSTHROUGH_BOOL_FLAGS = new Set(["--human", "--oauth"]);
 
 function parseArgs(argv) {
   const opts = {
-    tunnel: true, open: true, human: false,
-    root: process.cwd(), token: null, port: 8777, uiPort: 8790,
+    tunnel: true, open: true, human: false, oauth: false,
+    root: process.cwd(), token: null, issuer: null, port: 8777, uiPort: 8790,
     passthrough: [], help: false,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -89,10 +96,12 @@ function parseArgs(argv) {
     else if (arg === "--token") opts.token = next();
     else if (arg === "--port") opts.port = Number(next());
     else if (arg === "--ui-port") opts.uiPort = Number(next());
+    else if (arg === "--issuer") opts.issuer = next();
     else if (PASSTHROUGH_VALUE_FLAGS.has(arg)) opts.passthrough.push(arg, next());
     else if (PASSTHROUGH_BOOL_FLAGS.has(arg)) {
       opts.passthrough.push(arg);
-      opts.human = true;
+      if (arg === "--human") opts.human = true;
+      if (arg === "--oauth") opts.oauth = true;
     } else if (arg.startsWith("--")) opts.passthrough.push(arg);
     else throw new Error(`unknown argument: ${arg}`);
   }
@@ -133,19 +142,21 @@ function cloudflaredPath() {
  * Start the bundled server. Unlike the checkout launcher there is no
  * supervise.mjs in a package: this process watches the child itself.
  */
-function startServer({ root, port, uiPort, token, passthrough }) {
-  const child = spawn(process.execPath, [
+function startServer({ root, port, uiPort, token, issuer, passthrough }) {
+  const args = [
     SERVER,
     "--root", root,
     "--http", "--port", String(port),
     "--ui-port", String(uiPort),
     "--token", token,
     ...passthrough,
-  ], { stdio: ["ignore", "pipe", "pipe"], cwd: root });
+  ];
+  if (issuer) args.push("--issuer", issuer);
+  const child = spawn(process.execPath, args, { stdio: ["ignore", "pipe", "pipe"], cwd: root });
 
   let buf = "";
   const ready = new Promise((resolve, reject) => {
-    const check = () => { if (buf.includes("[pi-mcp] ready")) resolve(); };
+    const check = () => { if (buf.includes("[pi-as-mcp] ready")) resolve(); };
     child.stdout.on("data", (d) => { buf += d.toString(); process.stdout.write(d); check(); });
     child.stderr.on("data", (d) => { buf += d.toString(); process.stderr.write(d); check(); });
     child.on("error", reject);
@@ -197,6 +208,22 @@ function startTunnel(port, exe) {
   setTimeout(() => finishUrl(null), 60000);
   setTimeout(() => finishReg(false), 90000);
   return { child, url, registered, log: () => log };
+}
+
+/**
+ * Start a quick tunnel and wait for its hostname. A missing hostname is reported
+ * here, once, because it is the same outcome whether the tunnel was opened early
+ * (for --oauth) or late.
+ */
+async function openTunnel(port, exe) {
+  process.stdout.write("  opening a Cloudflare tunnel…\n");
+  const t = startTunnel(port, exe);
+  const base = await t.url;
+  if (!base) {
+    process.stderr.write("  could not get a tunnel URL — falling back to localhost only.\n");
+    process.stderr.write(t.log().split("\n").slice(-10).map((l) => `    ${l}\n`).join(""));
+  }
+  return { tunnel: t, base };
 }
 
 /** Advisory. A local proxy can make your own machine unable to reach its own URL. */
@@ -271,36 +298,48 @@ async function main() {
   process.on("SIGTERM", () => shutdown(0));
 
   try {
-    process.stdout.write(`\n  starting pi-mcp for ${opts.root}\n`);
-    server = startServer({ root: opts.root, port, uiPort, token, passthrough: opts.passthrough });
+    process.stdout.write(`\n  starting pi-as-mcp for ${opts.root}\n`);
+
+    const cloudflared = cloudflaredPath();
+    if (opts.tunnel && !cloudflared) {
+      process.stderr.write("  no bundled cloudflared — running on localhost only.\n");
+      process.stderr.write("  (this package was built without one; rebuild with --with-cloudflared)\n");
+    }
+
+    // With --oauth the tunnel has to be up *before* the server starts. The
+    // authorization server advertises a single issuer in its metadata, and a client
+    // checks that against the address it actually reached — so it has to be the
+    // public hostname, which exists only once cloudflared has printed it.
+    let publicBase = null;
+    if (opts.tunnel && cloudflared && opts.oauth && !opts.issuer) {
+      const opened = await openTunnel(port, cloudflared);
+      tunnel = opened.tunnel;
+      publicBase = opened.base;
+    }
+
+    const issuer = opts.oauth ? opts.issuer ?? publicBase : null;
+    server = startServer({ root: opts.root, port, uiPort, token, issuer, passthrough: opts.passthrough });
     await server.ready;
 
     let publicMcp = null;
     let probeNote = null;
-    if (opts.tunnel) {
-      const exe = cloudflaredPath();
-      if (!exe) {
-        process.stderr.write("  no bundled cloudflared — running on localhost only.\n");
-        process.stderr.write("  (this package was built without one; rebuild with --with-cloudflared)\n");
-      } else {
-        process.stdout.write("  opening a Cloudflare tunnel…\n");
-        tunnel = startTunnel(port, exe);
-        const base = await tunnel.url;
-        if (!base) {
-          process.stderr.write("  could not get a tunnel URL — falling back to localhost only.\n");
-          process.stderr.write(tunnel.log().split("\n").slice(-10).map((l) => `    ${l}\n`).join(""));
+    if (opts.tunnel && cloudflared) {
+      if (!tunnel) {
+        const opened = await openTunnel(port, cloudflared);
+        tunnel = opened.tunnel;
+        publicBase = opened.base;
+      }
+      if (publicBase) {
+        process.stdout.write(`  tunnel url ${publicBase} — waiting for the edge connection…\n`);
+        if (await tunnel.registered) {
+          publicMcp = `${publicBase}/mcp`;
+          const probe = await probeOnce(publicMcp);
+          probeNote = probe.status
+            ? `verified reachable from this machine (HTTP ${probe.status})`
+            : `this machine could not reach its own public URL (${probe.error}). That is common behind a local VPN/proxy and does not affect a remote client.`;
         } else {
-          process.stdout.write(`  tunnel url ${base} — waiting for the edge connection…\n`);
-          if (await tunnel.registered) {
-            publicMcp = `${base}/mcp`;
-            const probe = await probeOnce(publicMcp);
-            probeNote = probe.status
-              ? `verified reachable from this machine (HTTP ${probe.status})`
-              : `this machine could not reach its own public URL (${probe.error}). That is common behind a local VPN/proxy and does not affect a remote client.`;
-          } else {
-            process.stderr.write("  cloudflared never registered with Cloudflare — falling back to localhost only.\n");
-            process.stderr.write(tunnel.log().split("\n").slice(-10).map((l) => `    ${l}\n`).join(""));
-          }
+          process.stderr.write("  cloudflared never registered with Cloudflare — falling back to localhost only.\n");
+          process.stderr.write(tunnel.log().split("\n").slice(-10).map((l) => `    ${l}\n`).join(""));
         }
       }
     }
@@ -313,15 +352,18 @@ async function main() {
     const humanBlock = opts.human
       ? `\n  Human channel — open this, it is where the agent talks to you:\n      ${uiUrl}\n`
       : `\n  Human channel: off. Restart with --human for human_say/ask/wait and the web UI.\n`;
+    const oauthBlock = opts.oauth
+      ? `\n  OAuth is on. A client that speaks it needs only the URL above, and you approve it\n  in the human UI. Anything else can use the bearer token instead.\n      issuer: ${issuer}\n`
+      : "";
 
-    process.stdout.write(rule(`pi-mcp is ready — ${scope}`));
+    process.stdout.write(rule(`pi-as-mcp is ready — ${scope}`));
     process.stdout.write(`
   MCP URL to paste into the client:
       ${mcpUrl}
 
   Authorization header:
       Bearer ${token}
-${humanBlock}
+${oauthBlock}${humanBlock}
   The agent can read and write under:
       ${opts.root}
 `);

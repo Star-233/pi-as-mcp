@@ -11,7 +11,7 @@ import type { Config } from "./config.ts";
 const PREAMBLE =
   "You are an expert coding assistant. You run on a remote machine, and your only way to " +
   "reach the user's computer is the tool set below, which is served by a small local bridge " +
-  "(pi-mcp) running on that computer.";
+  "(pi-as-mcp) running on that computer.";
 
 const CLOSING_RULES = ["Be concise in your responses", "Show file paths clearly when working with files"];
 

@@ -1,4 +1,4 @@
-# pi-mcp
+# pi-as-mcp
 
 A one-shot MCP bridge that gives a **remote** agent two things on **your** machine:
 
@@ -11,7 +11,11 @@ works on your computer. Talking through tool calls keeps **one model and one con
 across the whole session and avoids the platform's chat round-trip.
 
 There are **no sessions and no persistence**. This process is meant to live for one sitting;
-"state" is a single in-memory message list.
+"state" is a single in-memory message list. That goes for authorization too: a client that
+outlives a restart simply authorizes again.
+
+The command is `pimcp` (the project's short name). Run it from the directory the agent
+should own.
 
 **→ Agent index: [AGENTS.md](AGENTS.md)** — read that before making non-trivial changes.
 
@@ -26,7 +30,7 @@ There are **no sessions and no persistence**. This process is meant to live for 
 | `get_instructions` | this repo | Returns the operating prompt verbatim |
 
 The full operating prompt is also sent as the MCP `instructions` field on `initialize`,
-and exposed as an MCP prompt named `pi_mcp_instructions`.
+and exposed as an MCP prompt named `pi_as_mcp_instructions`.
 
 ## Architecture
 
@@ -34,11 +38,14 @@ and exposed as an MCP prompt named `pi_mcp_instructions`.
 Arena / any MCP client (cloud)
         │  Streamable HTTP + Bearer   (or stdio)
         ▼
-   pi-mcp  ──────────────►  Pi tool definitions  (imported, not copied)
-      │                         │
-      │                         └─► your filesystem / shell, confined to --root
+   pi-as-mcp  ──────────────►  Pi tool definitions  (imported, not copied)
+      │  ▲                        │
+      │  │                        └─► your filesystem / shell, confined to --root
+      │  └── OAuth 2.1 (--oauth): discovery, registration, PKCE, tokens
       │
       └─► human channel (in-memory) ──SSE──►  http://127.0.0.1:8790  (your browser)
+                  ▲
+                  └── where an authorization is approved, by hand
 ```
 
 The bridge is **not** an agent. It has no model and no loop: the cloud agent is the only
@@ -52,12 +59,16 @@ npm link                # puts the `pimcp` command on your PATH — once
 
 cd /path/to/workdir     # the directory the agent should own
 pimcp --human           # server + token + public tunnel, prints a paste-ready URL
+pimcp --human --oauth   # ...and let clients authorize themselves instead
 ```
 
 `pimcp` roots the server at the **current directory**, picks free ports, mints a bearer
 token, opens a Cloudflare quick tunnel, waits for cloudflared to register with the edge,
 opens the human UI, and prints the MCP URL and token. Ctrl-C stops everything.
 `pimcp --no-tunnel` keeps it on localhost; `pimcp --help` lists the rest.
+
+With `--oauth` the order changes: the tunnel is opened *first*, so that the authorization
+server can advertise the public hostname it will actually be reached on.
 
 **The human channel is off unless you pass `--human`.** Without it the bridge is a plain
 tool surface: no web UI, no `human_say`/`human_ask`/`human_wait`, no `<human>` section in
@@ -75,6 +86,10 @@ node src/index.ts --root /path/to/workdir --http --port 8777 --token "$(openssl 
 
 # with the human channel and a yes/no gate on shell commands
 node src/index.ts --root /path/to/workdir --human --approve bash
+
+# with an authorization server in front of it
+node src/index.ts --root /path/to/workdir --human --http --oauth \
+  --issuer https://mcp.example.com
 ```
 
 Node 22.6+ is required: the sources are TypeScript and run directly via Node's type
@@ -97,6 +112,49 @@ cloudflared tunnel --url http://127.0.0.1:8777
 
 Quick tunnels get a **new hostname every restart** — re-paste the URL each time. If you get
 Cloudflare **error 1033 / HTTP 530**, you are pointing at a tunnel from a previous run.
+
+## OAuth
+
+`--oauth` turns the bridge into its own OAuth 2.1 authorization server, so a client that
+speaks MCP's authorization flow can be given access **without you copying a token into it**.
+The bearer token keeps working at the same time, for clients that cannot do OAuth.
+
+```bash
+pimcp --human --oauth                       # issuer defaults to the quick-tunnel hostname
+pimcp --human --oauth --issuer https://mcp.example.com
+```
+
+This is what a client does, and what it sees:
+
+1. It calls `/mcp`, gets `401` with `WWW-Authenticate: Bearer resource_metadata="…"`.
+2. It fetches `/.well-known/oauth-protected-resource/mcp`, then
+   `/.well-known/oauth-authorization-server`.
+3. It registers itself at `/register` (dynamic client registration), then sends its browser
+   to `/authorize` with a PKCE `code_challenge`.
+4. **That page has no buttons.** It names the client and where it wants to redirect, and
+   says to approve it on your own machine. It then waits.
+5. The request appears as a card in the human UI — client name, redirect target, scope — with
+   **Allow** and **Deny**. Nothing happens until you click one.
+6. Allow: the browser is handed a one-shot code and redirected back. The client exchanges it
+   at `/token` for an access token (12h) and a refresh token (30d), and calls `/mcp` with it.
+
+**The decision lives on the human UI on purpose.** The page at `/authorize` is served from
+whatever address the client reached — over a quick tunnel, that is the open internet — and a
+button there would be an authorization any stranger who found the URL could click. The UI is
+bound to loopback and can carry `--ui-token`; a page that only you can open is the only kind
+that can be allowed to hand away a shell.
+
+Requests wait 10 minutes for you and then expire; at most 8 may be pending at once. Everything
+is in memory: tokens, registered clients and pending requests all die with the process, so a
+restart means the client authorizes again.
+
+**Reachability is the whole game.** The authorization server advertises exactly one `issuer`
+(`--issuer`, or the quick-tunnel hostname, or `http://127.0.0.1:<port>`), and a client checks
+it against the address it actually reached. So the URL you give the client has to be the URL
+the bridge is reachable at, and it must be `https` — except for a loopback address, which is
+allowed unencrypted for local use. The bridge logs the issuer it chose, and warns when that is
+a loopback address a remote client cannot use. A stable Zero Trust hostname is a better fit
+here than a quick tunnel, whose hostname changes every restart.
 
 ## The human UI
 
@@ -123,6 +181,10 @@ network off. **Only started with `--human`**; without that flag the port is neve
 
 - **One bubble style.** Messages carry a category, but it is not printed on them — a chat does
   not have message types. The category still picks the alert sound.
+- **Authorization cards.** With `--oauth`, a client asking for access appears above the
+  timeline — not in it, because it is not something the agent said — with **Allow** and
+  **Deny**. It stays until you answer or it expires in 10 minutes, and it chimes like a
+  question. The client's name is shown as text, never as markup: it chose that name itself.
 
 `ui.html` is read on every request, so changing it costs a browser refresh, not a restart of
 the bridge. Changes to `src/*.ts` still need a restart.
@@ -140,21 +202,24 @@ restart clears it.
 
 ## Configuration
 
-Flags take precedence over environment variables.
+Flags take precedence over environment variables. Environment variables all carry the
+`PI_AS_MCP_` prefix, after the project's name.
 
 | Flag | Env | Default | Meaning |
 |---|---|---|---|
-| `--root` | `PI_MCP_ROOT` | cwd | Sandbox root. Every path argument is confined here. |
-| `--human` | `PI_MCP_HUMAN=1` | off | Expose the human channel: `human_say`/`human_ask`/`human_wait`, the web UI, the `<human>` prompt section, and the approval gate. |
-| `--tools` | `PI_MCP_TOOLS` | 7 on Linux, 8 on Windows | Comma-separated subset to expose. `powershell` is Windows-only. |
-| `--approve` | `PI_MCP_APPROVE` | none | Tools that require human approval, e.g. `bash`. **Needs `--human`**: with no human there is nobody to ask, so the bridge refuses to start instead of auto-approving. |
-| `--deny` | `PI_MCP_DENY` | `.ssh,.aws,.gnupg,.git-credentials,.netrc,.config/gcloud` | Paths refused even inside the root. |
-| `--block-ms` | `PI_MCP_BLOCK_MS` | 90000 | Max time `human_ask`/`human_wait` block before returning `no_message`. |
-| `--http` | `PI_MCP_HTTP=1` | off | Serve Streamable HTTP instead of stdio. |
-| `--port` / `--host` | `PI_MCP_PORT` / `PI_MCP_HOST` | 8777 / 127.0.0.1 | HTTP listener. A port already in use is a hard error, not a silent fallback. |
-| `--token` | `PI_MCP_TOKEN` | none | Bearer token. **Set this if you expose the port.** |
-| `--ui-port` / `--ui-host` | `PI_MCP_UI_PORT` / `PI_MCP_UI_HOST` | 8790 / 127.0.0.1 | Human web UI. Ignored without `--human`. |
-| `--ui-token` | `PI_MCP_UI_TOKEN` | none | Token for the human UI. |
+| `--root` | `PI_AS_MCP_ROOT` | cwd | Sandbox root. Every path argument is confined here. |
+| `--human` | `PI_AS_MCP_HUMAN=1` | off | Expose the human channel: `human_say`/`human_ask`/`human_wait`, the web UI, the `<human>` prompt section, and the approval gate. Also where an OAuth authorization is approved. |
+| `--tools` | `PI_AS_MCP_TOOLS` | 7 on Linux, 8 on Windows | Comma-separated subset to expose. `powershell` is Windows-only. |
+| `--approve` | `PI_AS_MCP_APPROVE` | none | Tools that require human approval, e.g. `bash`. **Needs `--human`**: with no human there is nobody to ask, so the bridge refuses to start instead of auto-approving. |
+| `--deny` | `PI_AS_MCP_DENY` | `.ssh,.aws,.gnupg,.git-credentials,.netrc,.config/gcloud` | Paths refused even inside the root. |
+| `--block-ms` | `PI_AS_MCP_BLOCK_MS` | 90000 | Max time `human_ask`/`human_wait` block before returning `no_message`. |
+| `--http` | `PI_AS_MCP_HTTP=1` | off | Serve Streamable HTTP instead of stdio. |
+| `--port` / `--host` | `PI_AS_MCP_PORT` / `PI_AS_MCP_HOST` | 8777 / 127.0.0.1 | HTTP listener. A port already in use is a hard error, not a silent fallback. |
+| `--token` | `PI_AS_MCP_TOKEN` | none | Bearer token. **Set this if you expose the port**, unless you use `--oauth`. |
+| `--oauth` | `PI_AS_MCP_OAUTH=1` | off | Serve an OAuth 2.1 authorization server in front of `/mcp`. **Needs `--http` and `--human`**: the flow has to be authenticated somewhere, and approved by somebody. |
+| `--issuer` | `PI_AS_MCP_ISSUER` | the tunnel hostname, else `http://127.0.0.1:<port>` | The URL clients reach, and the identity the authorization server advertises. Only with `--oauth`. Must be `https`, or a loopback `http` address. |
+| `--ui-port` / `--ui-host` | `PI_AS_MCP_UI_PORT` / `PI_AS_MCP_UI_HOST` | 8790 / 127.0.0.1 | Human web UI. Ignored without `--human`. |
+| `--ui-token` | `PI_AS_MCP_UI_TOKEN` | none | Token for the human UI. **Set it if you bind the UI to anything but loopback** — with `--oauth`, the UI is what can grant access here. |
 
 ## Security
 
@@ -163,12 +228,19 @@ design, so:
 
 - **Run it in a container or VM, with only one work directory mounted.** `--root` confines
   path arguments, but a shell can still reach anything the process can.
-- **Always set `--token` when using `--http`.** Without it the port is unauthenticated and
-  the bridge logs a warning.
-- **Use `--human --approve bash` (and `powershell`) if you want a gate.** Every shell command
-  then blocks on a yes/no prompt in the human UI. It **fails closed**: no answer means denied.
-  The gate needs `--human`, because with the human channel off there is nobody to ask — the
-  bridge refuses to start rather than let `--approve` silently mean "allow".
+- **Always set `--token` when using `--http`, unless you are using `--oauth`.** Without either,
+  the port is unauthenticated and the bridge logs a warning.
+- **With `--oauth`, the human UI is the authorization authority.** Keep it on loopback, or set
+  `--ui-token`. A UI that others can reach with no token is a way for them to authorize
+  themselves; the bridge warns and the info panel calls it out.
+- **An OAuth access token is a shell until it expires** (12h, refreshable for 30 days or until
+  the process ends). Denying a request that has not been answered yet is the only way to
+  refuse — once granted, the way to take it back is to restart the bridge. Keep the run short;
+  that is what this process is for.
+- **Use `--human --approve bash` (and `powershell`) if you want a gate per command.** Every
+  shell command then blocks on a yes/no prompt in the human UI. It **fails closed**: no answer
+  means denied. The gate needs `--human`, because with the human channel off there is nobody to
+  ask — the bridge refuses to start rather than let `--approve` silently mean "allow".
 - **Rotate the token per sitting.** For one-shot use, quick tunnels that change hostname are
   fine — they expire on their own.
 - Tool output (file contents, command output) transits the remote platform and may be logged
@@ -224,9 +296,9 @@ dist/win32-x64/
   runtime/         the Node runtime — no npm/npx/corepack
   bin/             cloudflared, vendored
   app/
-    index.mjs      the bridge *and Pi's tools*, bundled — ~700KB
-    node_modules/  only what is still imported at runtime: the MCP SDK and
-                   Pi's lazy image-resize wasm
+    index.mjs      the bridge *and Pi's tools*, bundled — ~3.1MB
+    node_modules/  only Pi's lazy image-resize wasm — everything else is in the
+                   bundle
     ui.html        the human UI page
     vendor/        marked + KaTeX, vendored
 ```
@@ -254,10 +326,15 @@ Four details worth knowing:
   installed package. esbuild can follow a literal, so Pi's ~265KB of tool source gets
   inlined and the artifact no longer needs its 143MB `node_modules`. Descriptions and
   schemas still come from the installed version, so they cannot drift.
-- **What is left in `node_modules` is small and deliberate.** The MCP SDK (deep-imported,
-  resolved through its own `exports` map) plus `@silvia-odwyer/photon-node`, the 2.2MB wasm
-  Pi only `import()`s when an image actually needs resizing — a bundled wasm blob cannot be
-  lazily loaded. Node builtins are external too.
+- **Nothing but one wasm file is left in `node_modules`, and that is deliberate.** esbuild
+  inlines every static import — Pi's tools, the MCP SDK, and express, which `--oauth` brings
+  in with the SDK's authorization router — so the SDK's 5.6MB copy beside the bundle is gone;
+  a packaged build with that directory deleted still served initialize, read, bash,
+  human_say and a whole OAuth flow. What remains is `@silvia-odwyer/photon-node`, the 2.2MB
+  wasm Pi only `import()`s when an image actually needs resizing, because a bundled wasm blob
+  cannot be lazily loaded. It is copied to the *name* the bundle asks for rather than the
+  nested path npm installed it at: Node resolves a bare specifier starting from
+  `app/index.mjs`, and the nested location is not on that path — which is how it was found.
 - **cloudflared is vendored, so a tunnel needs nothing installed.** It is copied from a
   local install when there is one (including from inside WSL when cross-building for
   Linux), and downloaded from the GitHub release otherwise. Without it the package still
@@ -289,7 +366,7 @@ Measured on the Linux package, and the Windows one differs only in ratio:
 |---|---|---|
 | `runtime/node` | **123 MB** | The Node binary itself. Only ~41MB is `.text`; the rest is `.data`, symbols and debug info that `strip` cannot remove. This is the floor for any Node-based artifact. |
 | `bin/cloudflared` | 27–39 MB | A statically linked Go binary, vendored so a tunnel needs nothing installed. |
-| `app/` | 11 MB | `index.mjs` (~700KB, Pi's tools included), the MCP SDK, Pi's lazy wasm, the UI page and its vendored libs. |
+| `app/` | 6 MB | `index.mjs` (~3.1MB: Pi's tools, plus express and the MCP SDK's authorization router for `--oauth`), Pi's lazily-loaded wasm, the UI page and its vendored libs. |
 
 `npm`, `npx`, `corepack`, `share/` and `lib/node_modules` are deleted from the runtime: the
 bridge spawns `node` on its own bundle and never runs a package manager. Deleting `bin/`
@@ -299,13 +376,16 @@ alone is not enough — that only removes the launchers, while the 17MB of npm i
 ## Tests
 
 ```bash
-npm test        # config defaults, stdio round-trip, HTTP round-trip + approval gate
+npm test        # config defaults, stdio round-trip, HTTP round-trip + approval gate,
+                # the OAuth flow end to end, and both UI probes
 npm run typecheck
 npm run accept  # end-to-end human acceptance; you reply in the browser
 ```
 
 The probes spawn the real server and assert on real MCP traffic, including that a sandbox
-escape is refused and that an unapproved shell command never runs.
+escape is refused, that an unapproved shell command never runs, and that an authorization
+code cannot be replayed, a wrong PKCE verifier is refused, and a denied request grants
+nothing.
 
 ## Gotchas
 
@@ -333,18 +413,38 @@ escape is refused and that an unapproved shell command never runs.
   section names the failure mode outright ("your turn must not end while you are waiting"). If you
   touch either, re-test with a real client agent — `npm test` cannot catch this.
 - **Port 8765 is taken by AgentDock on this machine**, which is why the HTTP default is 8777.
+- **The advertised issuer carries a trailing slash.** The SDK writes both the issuer and the
+  resource metadata from `URL.href`, so a bare origin comes out as `https://host/`. That is
+  fine as long as the two documents agree — a client resolves the metadata endpoint from
+  `authorization_servers[0]` and compares the issuer it finds against exactly that string —
+  which is what `scripts/oauth-probe.mjs` checks. Do not "fix" one of them by hand.
+- **`--oauth` without `--human` or `--http` is a hard exit.** The same reasoning as
+  `--approve`: an authorization is granted by a person clicking, an HTTP header is what it
+  authenticates, and a flag that cannot do its job should not look like it worked.
+- **Authorization endpoints are rate-limited, and the tunnel sets `X-Forwarded-For`.**
+  Express refuses to key the limiter on a header it has not been told to trust, which shows up
+  as noise or a 500 that only happens behind the tunnel. `src/index.ts` sets `trust proxy 1`
+  for that one hop, and the OAuth probe sends the header so this cannot regress silently.
+- **Packaging from Git Bash picks up the wrong `tar`.** The script extracts the Node archive
+  with `tar -xf <windows path>`; MSYS's GNU tar reads `D:\…` as a remote host and dies with
+  `tar: Cannot connect to D: resolve failed`, while Windows' own `tar.exe` handles it. Run the
+  build with `C:\Windows\System32` ahead of the Git tools on `PATH`, or from PowerShell/cmd.
 
 ## History
 
 This repository previously contained **HumanChat MCP**, a Python human-in-the-loop MCP
-server (broker + TUI + Web UI). It was replaced by `pi-mcp`; that code was removed from the
-working tree. The old implementation, including the edits that were uncommitted at the time
-of removal, is preserved at tag **`humanchat-final`**:
+server (broker + TUI + Web UI). It was replaced by what later became `pi-as-mcp`; that code
+was removed from the working tree. The old implementation, including the edits that were
+uncommitted at the time of removal, is preserved at tag **`humanchat-final`**:
 
 ```bash
 git show humanchat-final --stat
 git checkout humanchat-final -- src/humanchat/webui_assets.py   # recover a single file
 ```
+
+The project was called `pi-mcp` until it was published, and was renamed to `pi-as-mcp` to
+match the repository. The command stayed `pimcp`, and the environment variables moved from
+`PI_MCP_*` to `PI_AS_MCP_*` — there are no aliases for the old names.
 
 The former `pi-mcp/` subdirectory was promoted to the repository root; `git log --follow`
 crosses that move.

@@ -1,5 +1,7 @@
 import path from "node:path";
 
+export const PROJECT = "pi-as-mcp";
+
 export type Config = {
   root: string;
   tools: string[];
@@ -15,6 +17,14 @@ export type Config = {
   httpHost: string;
   httpPort: number;
   httpToken: string;
+  /** Serve an OAuth 2.1 authorization server in front of /mcp. Off by default. */
+  oauth: boolean;
+  /**
+   * The authorization server's identity, and the base of every URL it advertises.
+   * A remote client compares it against what it discovered, so it has to be the URL
+   * the client actually reached - not the loopback address the bridge binds.
+   */
+  issuer: string;
   serverName: string;
 };
 
@@ -25,6 +35,7 @@ const DEFAULT_TOOLS =
       // there only produces a tool call that always fails.
       ["read", "write", "edit", "ls", "grep", "find", "bash"];
 const DEFAULT_DENY = [".ssh", ".aws", ".gnupg", ".git-credentials", ".netrc", ".config/gcloud"];
+const DEFAULT_PORT = 8777;
 
 function parseFlags(argv: string[]): Record<string, string | boolean> {
   const out: Record<string, string | boolean> = {};
@@ -60,35 +71,42 @@ function str(v: string | boolean | undefined, fallback: string): string {
   return typeof v === "string" ? v : fallback;
 }
 
+const truthy = (v: string | undefined): boolean => v === "1" || v === "true";
+
 /** Resolve configuration from CLI flags, then environment, then defaults. */
 export function loadConfig(argv: string[]): Config {
   const f = parseFlags(argv);
   const env = process.env;
 
   const root = path.resolve(
-    str(f.root, env.PI_MCP_ROOT ?? process.cwd()),
+    str(f.root, env.PI_AS_MCP_ROOT ?? process.cwd()),
   );
-  const tools = list(str(f.tools, env.PI_MCP_TOOLS ?? "") || undefined, DEFAULT_TOOLS);
-  const approve = list(str(f.approve, env.PI_MCP_APPROVE ?? "") || undefined, []);
-  const deny = list(str(f.deny, env.PI_MCP_DENY ?? "") || undefined, DEFAULT_DENY);
+  const tools = list(str(f.tools, env.PI_AS_MCP_TOOLS ?? "") || undefined, DEFAULT_TOOLS);
+  const approve = list(str(f.approve, env.PI_AS_MCP_APPROVE ?? "") || undefined, []);
+  const deny = list(str(f.deny, env.PI_AS_MCP_DENY ?? "") || undefined, DEFAULT_DENY);
 
-  const http = f.http === true || env.PI_MCP_HTTP === "1" || env.PI_MCP_HTTP === "true";
-  const human = f.human === true || env.PI_MCP_HUMAN === "1" || env.PI_MCP_HUMAN === "true";
+  const http = f.http === true || truthy(env.PI_AS_MCP_HTTP);
+  const human = f.human === true || truthy(env.PI_AS_MCP_HUMAN);
+  const oauth = f.oauth === true || truthy(env.PI_AS_MCP_OAUTH);
+  const httpHost = str(f.host, env.PI_AS_MCP_HOST ?? "127.0.0.1");
+  const httpPort = num(str(f.port, env.PI_AS_MCP_PORT ?? ""), DEFAULT_PORT);
 
   return {
     root,
     tools,
     approve,
     deny,
-    blockMs: num(str(f["block-ms"], env.PI_MCP_BLOCK_MS ?? ""), 90000),
+    blockMs: num(str(f["block-ms"], env.PI_AS_MCP_BLOCK_MS ?? ""), 90000),
     human,
-    uiPort: num(str(f["ui-port"], env.PI_MCP_UI_PORT ?? ""), 8790),
-    uiHost: str(f["ui-host"], env.PI_MCP_UI_HOST ?? "127.0.0.1"),
-    uiToken: str(f["ui-token"], env.PI_MCP_UI_TOKEN ?? ""),
+    uiPort: num(str(f["ui-port"], env.PI_AS_MCP_UI_PORT ?? ""), 8790),
+    uiHost: str(f["ui-host"], env.PI_AS_MCP_UI_HOST ?? "127.0.0.1"),
+    uiToken: str(f["ui-token"], env.PI_AS_MCP_UI_TOKEN ?? ""),
     http,
-    httpHost: str(f.host, env.PI_MCP_HOST ?? "127.0.0.1"),
-    httpPort: num(str(f.port, env.PI_MCP_PORT ?? ""), 8777),
-    httpToken: str(f.token, env.PI_MCP_TOKEN ?? ""),
-    serverName: "pi-mcp",
+    httpHost,
+    httpPort,
+    httpToken: str(f.token, env.PI_AS_MCP_TOKEN ?? ""),
+    oauth,
+    issuer: str(f.issuer, env.PI_AS_MCP_ISSUER ?? ""),
+    serverName: PROJECT,
   };
 }
