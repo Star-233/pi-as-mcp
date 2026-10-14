@@ -30,7 +30,7 @@ an authorization is approved; `--human` is whether the agent can also *talk* to 
 environment variables use the `PI_AS_MCP_` prefix.
 
 `~/.pimcp/config.json` (moved with `PI_AS_MCP_CONFIG`) unifies what a run is steered by:
-`human`, `approval: { mode: "always" | "never" }`, `mcps` (upstream MCP servers) and `tunnel`
+`human`, `approval: { mode: "always" | "never" }`, `confine` (`false` lifts the root and the deny list from the file tools), `mcps` (upstream MCP servers) and `tunnel`
 (quick or named, your own hostname). An explicit flag beats the file; the file beats the
 defaults. Its hot layer — the human channel, the approval mode, the upstreams — applies to a
 running bridge through the watcher; the tunnel layer is restart-only and says so when it

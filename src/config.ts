@@ -58,6 +58,8 @@ export type Config = {
    * still accepted, but only as a way to say "always".
    */
   approvalMode: ApprovalMode;
+  /** Whether the file tools are held to the sandbox root and the deny list. See the config file's confine. */
+  confine: boolean;
   /** Upstream MCP servers from the config file, by name. Hot-managed at runtime. */
   mcps: Record<string, McpUpstream>;
   configPath: string;
@@ -166,6 +168,7 @@ export function loadConfig(argv: string[]): Config {
     oauthClientId: str(f["oauth-client-id"], env.PI_AS_MCP_OAUTH_CLIENT_ID ?? ""),
     oauthClientSecret: str(f["oauth-client-secret"], env.PI_AS_MCP_OAUTH_CLIENT_SECRET ?? ""),
     serverName: PROJECT,
+    confine: file.confine !== false,
     approvalMode: f.approve !== undefined
       ? "always"
       : file.approval?.mode === "always" || file.approval?.mode === "never"

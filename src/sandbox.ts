@@ -18,15 +18,30 @@ export class Sandbox {
   private rootValue: string;
   private denySpec: string[];
   private deny: string[];
+  private confinedValue: boolean;
 
-  constructor(root: string, deny: string[]) {
+  constructor(root: string, deny: string[], confined = true) {
     this.rootValue = path.resolve(root);
     this.denySpec = deny;
     this.deny = deny.map((d) => path.resolve(this.rootValue, d).toLowerCase());
+    this.confinedValue = confined;
   }
 
   get root(): string {
     return this.rootValue;
+  }
+
+  /**
+   * Whether the root and the deny list apply. Off is full access, the config
+   * file's `confine: false`: the file tools then reach any path, as bash always
+   * could. The root still sets the default directory for relative paths.
+   */
+  get confined(): boolean {
+    return this.confinedValue;
+  }
+
+  setConfined(on: boolean): void {
+    this.confinedValue = on;
   }
 
   /**
@@ -54,6 +69,7 @@ export class Sandbox {
   /** Resolve a tool-supplied path against the root and verify containment. */
   resolve(input: string): string {
     const abs = path.resolve(this.root, input);
+    if (!this.confinedValue) return abs;
     const rel = path.relative(this.root, abs);
     if (rel.startsWith("..") || path.isAbsolute(rel)) {
       throw new SandboxError(

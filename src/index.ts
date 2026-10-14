@@ -37,7 +37,7 @@ if (cfg.configFileError) {
   log(`config file: ${cfg.configPath}`);
 }
 const channel = new HumanChannel();
-const sandbox = new Sandbox(cfg.root, cfg.deny);
+const sandbox = new Sandbox(cfg.root, cfg.deny, cfg.confine);
 
 /**
  * The mutable half of the configuration: what the config file and the web UI can
@@ -311,6 +311,9 @@ log(
     ? `tools: ${pi.tools.map((t) => t.name).join(", ")}, human_say, human_ask, human_wait`
     : `tools: ${pi.tools.map((t) => t.name).join(", ")}`,
 );
+if (!cfg.confine) {
+  log("file tools are not confined: read, write, edit, ls, grep and find reach any path (confine is false in the config file)");
+}
 if (cfg.approvalMode === "always") {
   // The approval gate needs somebody to ask. With the human channel off there is
   // nobody, and "fail closed" must not degrade into "allow everything" - so this
@@ -396,6 +399,13 @@ const unwatchConfig = watchFileConfig((file, prev) => {
       state.human = file.human;
       if (changed) log(`config (hot): human channel ${state.human ? "on" : "off"}`);
     }
+  }
+  // Full access is a file setting too. Anything but an explicit false keeps the
+  // confinement on, so a typo in the file cannot widen the sandbox.
+  const confine = file.confine !== false;
+  if (confine !== sandbox.confined) {
+    sandbox.setConfined(confine);
+    log(`config (hot): file tools ${confine ? "confined to the root" : "not confined: any path"}`);
   }
   const mode = file.approval?.mode;
   if (mode === "always" || mode === "never") {

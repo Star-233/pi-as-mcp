@@ -68,6 +68,8 @@ pimcp --no-oauth        # ...without the authorization server (the client needs 
 `~/.pimcp/config.json` (moved with `PI_AS_MCP_CONFIG`) is one place for everything a run can
 be steered by. A flag given on the command line beats the file; the file beats the defaults.
 
+`"confine": false` is full access for the file tools (`read`, `write`, `edit`, `ls`, `grep`, `find`): the sandbox root and the deny list stop applying to them, as they never applied to `bash` and `powershell`. Anything but `false` keeps them on, and the setting takes effect while the bridge runs.
+
 ```json
 {
   "human": true,
@@ -376,7 +378,7 @@ design, so:
 
 - **Run it in a container or VM, with only one work directory mounted.** `--root` confines
   path arguments, but a shell can still reach anything the process can.
-- **The shell guard refuses a short list of destructive command lines** in every approval mode: a recursive delete of a root, a home or the working directory, a disk format, a shutdown, a boot-configuration or registry-hive wipe. It reads the text of a command, so it catches mistakes, not a determined caller. `--root` and the deny list apply to the file tools only; `bash` and `powershell` can reach any path.
+- **The shell guard refuses a short list of destructive command lines** in every approval mode: a recursive delete of a root, a home or the working directory, a disk format, a shutdown, a boot-configuration or registry-hive wipe. It reads the text of a command, so it catches mistakes, not a determined caller. `--root` and the deny list apply to the file tools only (unless the config file sets `confine: false`); `bash` and `powershell` can reach any path.
 - **Always set `--token` when using `--http`, unless you are using `--oauth`.** Without either,
   the port is unauthenticated and the bridge logs a warning.
 - **With `--oauth`, the web UI is the authorization authority.** Keep it on loopback, or set
