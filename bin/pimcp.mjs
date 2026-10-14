@@ -394,13 +394,25 @@ async function main() {
       : `
   Human channel: off. Restart with --human for human_say/ask/wait and the web UI.
 `;
+    // The banner has to name what the server will actually advertise. The server runs
+    // the issuer through `new URL(...)` — which adds the root slash — and falls back to
+    // loopback when the launcher passes none, so this mirrors both. Printing the raw
+    // option showed `issuer: null` for `--oauth --no-tunnel`, which is a value no client
+    // could ever have used.
+    const advertisedIssuer = opts.oauth
+      ? new URL(issuer ?? `http://127.0.0.1:${port}`).href
+      : null;
     const oauthBlock = opts.oauth
       ? `
   OAuth is on. A client that speaks it needs only the URL above, and you approve it
   in the human UI. Anything else can use the bearer token instead.
-      issuer: ${issuer}
+      issuer: ${advertisedIssuer}
 `
-      : "";
+      : `
+  OAuth is off, so the client pastes the bearer token above. To let a client authorize
+  itself instead — nothing to copy, you approve it by hand — restart with:
+      pimcp ${opts.human ? "--oauth" : "--human --oauth"}
+`;
     process.stdout.write(rule(`pi-as-mcp is ready — ${scope}`));
     process.stdout.write(`
   MCP URL to paste into the client:
