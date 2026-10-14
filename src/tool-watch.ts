@@ -1,6 +1,6 @@
 /**
  * Tells the agent when something it was shown has changed under it: the tool
- * list, or a project instructions file.
+ * list, a project instructions file, or a skill.
  *
  * The stateless HTTP transport cannot push notifications, so the bridge
  * piggybacks the news on the next tool result instead. The first tool call
@@ -19,8 +19,15 @@ export type ToolEntry = { name: string; description?: string; inputSchema?: unkn
 /** A project instructions file: where it is, and a hash of what it said. */
 export type ContextEntry = { path: string; hash: string };
 
+/** A skill as the agent was shown it: its name, its description, and a hash of both with its address. */
+export type SkillEntry = { name: string; description: string; hash: string };
+
 type Fingerprint = { hash: string; description: string; params: string };
-type Baseline = { tools: Map<string, Fingerprint>; contexts: Map<string, string> };
+type Baseline = {
+  tools: Map<string, Fingerprint>;
+  contexts: Map<string, string>;
+  skills: Map<string, SkillEntry>;
+};
 
 function sha1(text: string): string {
   return createHash("sha1").update(text).digest("hex");
@@ -37,7 +44,7 @@ function firstLine(text: string): string {
   return text.split("\n")[0].slice(0, 160);
 }
 
-function fingerprint(tools: ToolEntry[], contexts: ContextEntry[]): Baseline {
+function fingerprint(tools: ToolEntry[], contexts: ContextEntry[], skills: SkillEntry[]): Baseline {
   const toolMap = new Map<string, Fingerprint>();
   for (const e of tools) {
     const description = e.description ?? "";
@@ -47,15 +54,19 @@ function fingerprint(tools: ToolEntry[], contexts: ContextEntry[]): Baseline {
       params: paramsOf(e.inputSchema),
     });
   }
-  return { tools: toolMap, contexts: new Map(contexts.map((c) => [c.path, c.hash])) };
+  return {
+    tools: toolMap,
+    contexts: new Map(contexts.map((c) => [c.path, c.hash])),
+    skills: new Map(skills.map((s) => [s.name, s])),
+  };
 }
 
 export class ToolChangeTracker {
   private baseline: Baseline | null = null;
 
   /** The agent was just given these lists (a tools/list response). */
-  served(tools: ToolEntry[], contexts: ContextEntry[] = []): void {
-    this.baseline = fingerprint(tools, contexts);
+  served(tools: ToolEntry[], contexts: ContextEntry[] = [], skills: SkillEntry[] = []): void {
+    this.baseline = fingerprint(tools, contexts, skills);
   }
 
   /**
@@ -63,8 +74,8 @@ export class ToolChangeTracker {
    * baseline, and moves the baseline forward so the same change is announced once.
    * Before any list was served there is nothing to compare, so no notice.
    */
-  takeNotice(tools: ToolEntry[], contexts: ContextEntry[] = []): string | undefined {
-    const now = fingerprint(tools, contexts);
+  takeNotice(tools: ToolEntry[], contexts: ContextEntry[] = [], skills: SkillEntry[] = []): string | undefined {
+    const now = fingerprint(tools, contexts, skills);
     const before = this.baseline;
     this.baseline = now;
     if (!before) return undefined;
@@ -89,12 +100,20 @@ export class ToolChangeTracker {
     for (const file of before.contexts.keys()) {
       if (!now.contexts.has(file)) lines.push(`- project instructions: ${file} removed`);
     }
+    for (const [name, skill] of now.skills) {
+      const old = before.skills.get(name);
+      if (!old) lines.push(`+ skill: ${name}: ${firstLine(skill.description)}`);
+      else if (old.hash !== skill.hash) lines.push(`~ skill: ${name} changed: ${firstLine(skill.description)}`);
+    }
+    for (const name of before.skills.keys()) {
+      if (!now.skills.has(name)) lines.push(`- skill: ${name} removed`);
+    }
     if (lines.length === 0) return undefined;
 
     return [
       "[bridge notice] Something you were shown has changed:",
       ...lines,
-      "Call tools/list for the full tool list, or get_instructions for the current upstream status and project instructions.",
+      "Call tools/list for the full tool list, or get_instructions for the current upstream status, project instructions and skills.",
     ].join("\n");
   }
 }

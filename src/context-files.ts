@@ -48,7 +48,7 @@ function readContextFile(dir: string): ContextFile | undefined {
  * directory above it up to and including the git root. With no repository above
  * the root, only the root counts. Returned git root first.
  */
-function scopeDirs(root: string): string[] {
+export function scopeDirs(root: string): string[] {
   const start = path.resolve(root);
   const chain = [start];
   let dir = start;

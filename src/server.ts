@@ -14,6 +14,7 @@ import { buildAgentPrompt } from "./prompt.ts";
 import { describeCall } from "./sandbox.ts";
 import type { ToolChangeTracker } from "./tool-watch.ts";
 import { loadProjectContext } from "./context-files.ts";
+import { discoverSkills } from "./skills.ts";
 
 export const INSTRUCTIONS_TOOL = "get_instructions";
 
@@ -209,7 +210,9 @@ export function createMcpServer(
   // Project instructions are read fresh for every build, so an edit shows up in
   // get_instructions straight away.
   const contextNow = () => loadProjectContext(view().root);
-  const buildInstructions = () => buildAgentPrompt(view(), piTools, contextNow());
+  // Skills are discovered fresh the same way, so a new or edited skill shows up at the next check.
+  const skillsNow = () => discoverSkills(view().root);
+  const buildInstructions = () => buildAgentPrompt(view(), piTools, contextNow(), skillsNow());
   const instructions = buildInstructions();
   const server = new Server(
     { name: cfg.serverName, version: "0.1.0" },
@@ -237,7 +240,7 @@ export function createMcpServer(
   // The agent is handed this list, so the tracker takes it as the baseline.
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     const tools = currentTools();
-    extras.tracker.served(tools, contextNow());
+    extras.tracker.served(tools, contextNow(), skillsNow());
     return { tools };
   });
 
@@ -395,7 +398,7 @@ export function createMcpServer(
   server.setRequestHandler(CallToolRequestSchema, async (req, extra: any) => {
     const result = await dispatchCall(req, extra);
     // The agent learns that the tool list moved through its next result, once.
-    const notice = extras.tracker.takeNotice(currentTools(), contextNow());
+    const notice = extras.tracker.takeNotice(currentTools(), contextNow(), skillsNow());
     if (!notice) return result;
     return { ...result, content: [...(result.content ?? []), { type: "text", text: notice }] };
   });

@@ -1,5 +1,6 @@
 import type { AdaptedTool } from "./pi-tools.ts";
 import type { Config } from "./config.ts";
+import type { Skill } from "./skills.ts";
 
 /**
  * Pi's system prompt is a set of named sections rendered as
@@ -86,10 +87,15 @@ export function buildRules(tools: AdaptedTool[], promptGuidelines: string[] = []
   return rules.map((rule) => `- ${rule}`).join("\n");
 }
 
+function xml(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 export function buildPromptSections(
   cfg: Config,
   tools: AdaptedTool[],
   contextFiles: Array<{ path: string; content: string; truncated: boolean }> = [],
+  skills: Array<Pick<Skill, "name" | "description" | "location">> = [],
 ): Record<string, string> {
   const visible = tools.filter((t) => t.snippet);
   const toolsBlock = visible.length
@@ -110,6 +116,12 @@ export function buildPromptSections(
       ...contextFiles.map((f) => `## ${f.path.replace(/\\/g, "/")}${f.truncated ? " (truncated)" : ""}\n\n${f.content.trim()}`),
     ].join("\n\n");
   }
+  if (skills.length) {
+    sections.available_skills = [
+      "Skills are instructions for particular kinds of task. When a task matches a skill's description, read its SKILL.md first, with the read tool and the path in its location. Files a skill mentions are under the same skill:// address, for example skill://<name>/scripts/run.sh. Skills are read-only.",
+      ...skills.map((s) => `<skill>\n<name>${xml(s.name)}</name>\n<description>${xml(s.description)}</description>\n<location>${xml(s.location)}</location>\n</skill>`),
+    ].join("\n\n");
+  }
   // The <human> section is the entire instruction surface for the human channel.
   // With the channel off it must vanish, not shrink: a model told about tools it
   // cannot call will try to call them.
@@ -122,8 +134,9 @@ export function buildAgentPrompt(
   cfg: Config,
   tools: AdaptedTool[],
   contextFiles: Array<{ path: string; content: string; truncated: boolean }> = [],
+  skills: Array<Pick<Skill, "name" | "description" | "location">> = [],
 ): string {
-  const sections = buildPromptSections(cfg, tools, contextFiles);
+  const sections = buildPromptSections(cfg, tools, contextFiles, skills);
   const parts: string[] = [sections.preamble];
   for (const [name, content] of Object.entries(sections)) {
     if (name === "preamble") continue;

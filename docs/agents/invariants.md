@@ -57,3 +57,5 @@
     `--oauth-redirect` is a complete configuration — that shape is what the launcher always
     produces.
 
+
+15. **A `skill://` address is read-only, and it opens only a file inside a discovered skill directory.** `resolveSkillPath` is the only way to open one. It does not use the sandbox root, because a skill can live outside the root, so the containment that matters is the skill's own directory, checked as written and after symlinks are resolved. Every tool except `read` refuses the address. `scripts/skill-probe.mjs` covers the escapes.

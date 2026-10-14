@@ -1,4 +1,5 @@
 import type { Sandbox } from "./sandbox.ts";
+import { isSkillPath, resolveSkillPath } from "./skills.ts";
 
 const PI_PACKAGE = "@earendil-works/pi-coding-agent";
 
@@ -117,10 +118,19 @@ export async function loadPiTools(
           const effective: Record<string, unknown> = { ...args };
           if (pathArg) {
             const raw = effective[pathArg];
-            // Default to the sandbox root rather than the bridge process cwd.
-            effective[pathArg] = raw === undefined || raw === ""
-              ? sandbox.root
-              : sandbox.resolve(String(raw));
+            if (typeof raw === "string" && isSkillPath(raw)) {
+              // Skills are read-only and reached only through read. resolveSkillPath
+              // confines the file to its own skill directory, so the sandbox root does not apply.
+              if (name !== "read") {
+                throw new Error(`${raw} is a skill path, and skill paths are read-only. Use read.`);
+              }
+              effective[pathArg] = resolveSkillPath(sandbox.root, raw);
+            } else {
+              // Default to the sandbox root rather than the bridge process cwd.
+              effective[pathArg] = raw === undefined || raw === ""
+                ? sandbox.root
+                : sandbox.resolve(String(raw));
+            }
           }
           const res = await def.execute(
             `mcp-${Date.now()}`,

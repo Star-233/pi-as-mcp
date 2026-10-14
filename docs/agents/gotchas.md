@@ -291,3 +291,4 @@
   `tools/list` clears the news for the others. `scripts/toolchange-probe.mjs` covers the path over
   real traffic: growth, a config reconnect, a removal, and a disconnected upstream.
 
+- **A skill is read from its frontmatter one `key: value` per line.** A multi-line value (YAML `>` or `|`) reads as empty, so the skill is skipped and the reason goes to stderr once. Keep `name` and `description` on single lines. A description over 1024 characters is cut, because it goes into every instructions request.
