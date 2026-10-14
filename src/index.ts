@@ -10,20 +10,42 @@ import {
   mcpAuthRouter,
 } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { loadConfig, PROJECT } from "./config.ts";
+import {
+  readFileConfig,
+  watchFileConfig,
+  writeFileConfig,
+  type BridgeConfigFile,
+  type McpUpstream,
+} from "./config-file.ts";
+import { McpAggregator } from "./attach-mcp.ts";
 import { OAuthProvider, sameSecret } from "./oauth.ts";
 import { mountOAuthEndpoints } from "./oauth-http.ts";
 import { Sandbox } from "./sandbox.ts";
 import { HumanChannel } from "./human/channel.ts";
 import { startWebUI } from "./human/webui.ts";
 import { loadPiTools } from "./pi-tools.ts";
-import { createMcpServer } from "./server.ts";
+import { createMcpServer, type RuntimeState } from "./server.ts";
 
 // stdout is the stdio protocol channel: every log line must go to stderr.
 const log = (...args: unknown[]) => console.error(`[${PROJECT}]`, ...args);
 
 const cfg = loadConfig(process.argv.slice(2));
+if (cfg.configFileError) {
+  log(`warning: ${cfg.configFileError} - the file was ignored`);
+} else if (Object.keys(cfg.mcps).length) {
+  log(`config file: ${cfg.configPath}`);
+}
 const channel = new HumanChannel();
 const sandbox = new Sandbox(cfg.root, cfg.deny);
+
+/**
+ * The mutable half of the configuration: what the config file and the web UI can
+ * change while the bridge runs. Everything else in `cfg` is fixed for this run.
+ */
+const state: RuntimeState = { human: cfg.human, approvalMode: cfg.approvalMode };
+
+/** Created once Pi's tools are loaded (their names are the reserved set). */
+let aggregator: McpAggregator | null = null;
 
 // A flag that cannot do anything is a mistake, not a no-op: each of these would
 // otherwise look like it had taken effect.
@@ -105,15 +127,94 @@ let oauth: OAuthProvider | null = null;
  * a local page, but "set" is all it needs to say, and a value could end up in a
  * screenshot or a bug report.
  */
+/**
+ * What the web UI may do to the running bridge, from its own buttons. The UI is
+ * loopback by default; when it is reachable from elsewhere these endpoints are
+ * refused inside webui.ts unless a UI token is set, the same rule that governs
+ * the OAuth decision.
+ */
+const controls = {
+  async setRoot(newRoot: string): Promise<void> {
+    if (typeof newRoot !== "string" || !newRoot.trim()) throw new Error("a directory path is required");
+    sandbox.setRoot(newRoot); // throws SandboxError with the reason
+    log(`sandbox root moved to ${sandbox.root} (from the web UI)`);
+  },
+  async setHuman(on: boolean): Promise<void> {
+    if (on !== true && on !== false) throw new Error("enabled must be true or false");
+    if (!on && state.approvalMode === "always") {
+      throw new Error('approval mode is "always", which needs the human channel to answer the gate; switch approval to "never" first');
+    }
+    state.human = on;
+    writeFileConfig((c) => {
+      c.human = on;
+    });
+    log(`config: human channel ${on ? "on" : "off"} (from the web UI)`);
+  },
+  async setApproval(mode: "always" | "never"): Promise<void> {
+    if (mode !== "always" && mode !== "never") throw new Error('approval mode is "always" or "never"');
+    if (mode === "always" && !state.human) {
+      throw new Error('approval mode "always" needs the human channel on: there would be nobody to approve the calls');
+    }
+    state.approvalMode = mode;
+    writeFileConfig((c) => {
+      c.approval = { ...(c.approval ?? {}), mode };
+    });
+    log(`config: approval mode ${mode} (from the web UI)`);
+  },
+  async mcpConnect(name: string, config?: McpUpstream): Promise<void> {
+    if (!aggregator) throw new Error("still starting up; try again in a moment");
+    if (typeof name !== "string" || !/^[A-Za-z0-9 _-]{1,32}$/.test(name.trim())) {
+      throw new Error("the upstream needs a short name of letters, digits, spaces, - or _");
+    }
+    const trimmed = name.trim();
+    if (config !== undefined) {
+      const upstream = config as McpUpstream;
+      if (upstream.type === "stdio" && !upstream.command) throw new Error("a stdio upstream needs a command");
+      if (upstream.type === "http" && !upstream.url) throw new Error("an http upstream needs a url");
+      if (upstream.type !== "stdio" && upstream.type !== "http") throw new Error('upstream type is "stdio" or "http"');
+      // Headers (an Authorization token) are only ever written from the UI as
+      // part of a url-less config edit; the UI form does not offer them, and the
+      // file is the only place they can come from.
+      writeFileConfig((c) => {
+        c.mcps = { ...(c.mcps ?? {}), [trimmed]: { ...upstream, enabled: true } };
+      });
+    }
+    const upstream = readFileConfig().config.mcps?.[trimmed];
+    if (!upstream) throw new Error(`no upstream named "${trimmed}" in ${cfg.configPath}`);
+    // A name-only connect (the UI's reconnect button on a disabled entry) has to
+    // clear the enabled:false that a disconnect wrote, or the next reconcile -
+    // any file change triggers one - would silently disconnect it again.
+    writeFileConfig((c) => {
+      if (c.mcps?.[trimmed]) c.mcps[trimmed] = { ...c.mcps[trimmed], enabled: true };
+    });
+    const res = await aggregator.connect(trimmed, upstream, { fromConfig: true, enabled: true });
+    if (!res.ok) throw new Error(res.error ?? `could not connect to ${trimmed}`);
+  },
+  async mcpDisconnect(name: string): Promise<void> {
+    if (!aggregator) throw new Error("still starting up; try again in a moment");
+    const file = readFileConfig().config;
+    if (file.mcps?.[name]) {
+      // Keep it configured for next time: the entry stays in the file, switched off.
+      writeFileConfig((c) => {
+        if (c.mcps?.[name]) c.mcps[name] = { ...c.mcps[name], enabled: false };
+      });
+    }
+    await aggregator.disconnect(name);
+  },
+};
+
 const bridgeInfo = () => ({
   serverName: cfg.serverName,
   version: "0.1.0",
-  root: cfg.root,
+  root: sandbox.root,
   tools: pi.tools.map((t) => t.name),
-  approve: cfg.approve,
+  approve: state.approvalMode === "always" ? ["*"] : [],
+  approvalMode: state.approvalMode,
+  mcps: aggregator ? aggregator.summary() : [],
+  configPath: cfg.configPath,
   deny: cfg.deny,
   blockMs: cfg.blockMs,
-  human: cfg.human,
+  human: state.human,
   // The page needs both: `humanUI` says whether there is a composer to type into,
   // `human` whether an agent is listening on the other end of it.
   humanUI: cfg.humanUI,
@@ -153,6 +254,7 @@ if (cfg.humanUI) {
       port: cfg.uiPort,
       token: cfg.uiToken,
       info: bridgeInfo,
+      controls,
       get oauth() {
         return oauth;
       },
@@ -177,24 +279,50 @@ if (cfg.humanUI) {
 
 const pi = await loadPiTools(cfg.root, cfg.tools, sandbox);
 if (pi.missing.length) log(`warning: unknown tools ignored: ${pi.missing.join(", ")}`);
+
+// Upstream MCP tools are prefixed with their server's name, so the only rule
+// about collisions is "this bridge's own names win": a prefixed name that
+// matches one of them is skipped at connect time (see attach-mcp.ts).
+const reserved = new Set<string>([
+  ...pi.tools.map((t) => t.name),
+  "human_say",
+  "human_ask",
+  "human_wait",
+  "get_instructions",
+]);
+aggregator = new McpAggregator({
+  reserved: (name) => reserved.has(name),
+  log,
+});
+{
+  const enabled = Object.entries(cfg.mcps).filter(([, u]) => u.enabled !== false);
+  if (enabled.length) {
+    log(`mcp upstreams (config file): ${enabled.map(([n]) => n).join(", ")}`);
+    // Not awaited: a slow or dead upstream must not delay "ready". A failure is
+    // logged and shows up in the UI as an error with a retry button.
+    for (const [name, upstream] of enabled) {
+      void aggregator.connect(name, upstream, { fromConfig: true, enabled: true });
+    }
+  }
+}
 log(
   cfg.human
     ? `tools: ${pi.tools.map((t) => t.name).join(", ")}, human_say, human_ask, human_wait`
     : `tools: ${pi.tools.map((t) => t.name).join(", ")}`,
 );
-if (cfg.approve.length) {
+if (cfg.approvalMode === "always") {
   // The approval gate needs somebody to ask. With the human channel off there is
   // nobody, and "fail closed" must not degrade into "allow everything" - so this
-  // is a hard exit, not a warning.
+  // is a hard exit, not a warning. ("always" comes from --approve or the config
+  // file; the per-tool list a --approve used to take is now just this mode.)
   if (!cfg.human) {
     log(
-      `--approve ${cfg.approve.join(",")} needs the human channel: there would be nobody to ` +
-        "answer the approval prompt, and a gate with no answerer is not a gate. " +
-        "Restart with --human, or drop --approve.",
+      'approval mode "always" needs the human channel: there would be nobody to answer the gate. ' +
+        "Restart with --human, or set human: true in the config file.",
     );
     process.exit(1);
   }
-  log(`human approval required for: ${cfg.approve.join(", ")}`);
+  log("approval: every tool call waits for a yes/no from the human");
 }
 if (cfg.blockMs > 100000) {
   log(
@@ -203,7 +331,69 @@ if (cfg.blockMs > 100000) {
   );
 }
 
-const makeServer = () => createMcpServer(cfg, pi.tools, channel);
+const makeServer = () => createMcpServer(cfg, pi.tools, channel, { state, sandbox, aggregator });
+
+/**
+ * Bring the upstream set in line with the config file: connect what appeared or
+ * was switched on, disconnect what disappeared or was switched off. Idempotent
+ * by construction (connect is a no-op on a connected upstream), so the watcher
+ * and a UI action that both save the same file converge on the same state.
+ */
+async function reconcileMcps(file: BridgeConfigFile): Promise<void> {
+  if (!aggregator) return;
+  const desired = file.mcps ?? {};
+  for (const [name, upstream] of Object.entries(desired)) {
+    const current = aggregator.summary().find((u) => u.name === name);
+    const connected = current?.status === "connected" || current?.status === "connecting";
+    if (upstream.enabled === false && connected) {
+      await aggregator.disconnect(name);
+    } else if (upstream.enabled !== false && !connected) {
+      await aggregator.connect(name, upstream, { fromConfig: true, enabled: true });
+    }
+  }
+  for (const u of aggregator.summary()) {
+    if (u.fromConfig && !(u.name in desired)) {
+      await aggregator.disconnect(u.name);
+    }
+  }
+}
+
+// Hot-reload: the file's hot layer applies live (human channel, approval mode,
+// upstreams); the restart layer is only reported, because a tunnel cannot be
+// rewired under a running process. prev === null is the initial read, not a change.
+const unwatchConfig = watchFileConfig((file, prev) => {
+  // The hot layer is APPLIED, not diffed. The debounce coalesces bursts of
+  // UI saves into one read, so a diff against the previous read can miss a
+  // field that went A -> B -> A while the in-memory state still holds B - it
+  // would never converge. Setting from the file is idempotent and always
+  // converges; `prev` is only for the change log and the restart-layer notice.
+  if (file.human !== undefined) {
+    if (!file.human && state.approvalMode === "always") {
+      log('config: refusing to turn the human channel off while approval mode is "always" - the gate would have nobody to answer it.');
+    } else {
+      const changed = state.human !== file.human;
+      state.human = file.human;
+      if (changed) log(`config (hot): human channel ${state.human ? "on" : "off"}`);
+    }
+  }
+  const mode = file.approval?.mode;
+  if (mode === "always" || mode === "never") {
+    if (mode === "always" && !state.human) {
+      log('config: refusing approval mode "always" while the human channel is off - there would be nobody to answer. Turn the channel on first.');
+    } else {
+      const changed = state.approvalMode !== mode;
+      state.approvalMode = mode;
+      if (changed) log(`config (hot): approval mode ${mode}`);
+    }
+  }
+  // Reconcile unconditionally: it diffs the file against the live aggregator
+  // itself, so coalescing cannot desynchronize it, and it early-returns on
+  // upstreams that are already up.
+  void reconcileMcps(file).catch(() => {});
+  if (prev && JSON.stringify(file.tunnel ?? {}) !== JSON.stringify(prev.tunnel ?? {})) {
+    log("config: tunnel settings changed - they take effect on the next start; the current tunnel keeps running.");
+  }
+});
 
 let closeTransport: () => Promise<void>;
 
@@ -377,7 +567,13 @@ if (cfg.http) {
 
 const stop = async () => {
   log("shutting down");
+  unwatchConfig();
   channel.shutdown();
+  try {
+    await aggregator?.closeAll();
+  } catch {
+    /* best effort */
+  }
   try {
     await closeTransport();
   } catch {

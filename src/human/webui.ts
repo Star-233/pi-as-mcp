@@ -3,6 +3,21 @@ import fs from "node:fs";
 import path from "node:path";
 import type { HumanChannel, ChannelEvent } from "./channel.ts";
 import type { OAuthProvider } from "../oauth.ts";
+import type { McpUpstream } from "../config-file.ts";
+
+/**
+ * The controls the web UI can exercise over the running bridge: move the sandbox
+ * root, flip the human channel or the approval mode, and connect/disconnect
+ * upstream MCP servers. They are one object so every endpoint below can be the
+ * same two lines: guard, call, catch.
+ */
+export type WebUIControls = {
+  setRoot(newRoot: string): Promise<void>;
+  setHuman(on: boolean): Promise<void>;
+  setApproval(mode: "always" | "never"): Promise<void>;
+  mcpConnect(name: string, config?: McpUpstream): Promise<void>;
+  mcpDisconnect(name: string): Promise<void>;
+};
 
 export type WebUIOptions = {
   host: string;
@@ -23,6 +38,12 @@ export type WebUIOptions = {
    * after the UI is already listening. Nothing reads this until a request arrives.
    */
   readonly oauth?: Pick<OAuthProvider, "pending" | "decide" | "subscribe"> | null;
+  /**
+   * Runtime controls for the sidebar. Omitted when the UI runs without the
+   * human channel or an OAuth flow needing it... in practice always passed; the
+   * type stays optional so the probes can boot a UI without any.
+   */
+  controls?: WebUIControls;
 };
 
 const VENDOR_DIR = path.join(import.meta.dirname, "vendor");
@@ -79,6 +100,99 @@ function authorized(req: http.IncomingMessage, url: URL, token: string): boolean
 export function startWebUI(channel: HumanChannel, opts: WebUIOptions) {
   const pagePath = path.join(import.meta.dirname, "ui.html");
 
+  const loopback =
+    opts.host === "127.0.0.1" || opts.host === "localhost" || opts.host === "::1" || opts.host === "[::1]";
+  /**
+   * The controls change what this machine does (its sandbox root, its approval
+   * gate). A UI that is reachable from off this machine with no token is
+   * already a problem for the OAuth decision; for these it is a hard no: the
+   * same condition oauth.ts warns about, but enforced rather than warned.
+   */
+  const controlsOpen = Boolean(opts.controls) && (loopback || Boolean(opts.token));
+
+  /** One JSON body, capped like every other POST here. */
+  const readJson = (req: http.IncomingMessage): Promise<any> =>
+    new Promise((resolve) => {
+      let body = "";
+      req.on("data", (c) => {
+        body += c;
+        if (body.length > 1_000_000) req.destroy();
+      });
+      req.on("end", () => {
+        try {
+          resolve(JSON.parse(body || "{}"));
+        } catch {
+          resolve(null);
+        }
+      });
+      req.on("error", () => resolve(null));
+    });
+
+  /** POST /ctl/<name>: one shape for every control - {ok:true} or {ok:false, error}. */
+  const control = async (
+    res: http.ServerResponse,
+    fn: () => Promise<void>,
+  ): Promise<void> => {
+    if (!controlsOpen) {
+      res.writeHead(403, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          ok: false,
+          error:
+            "the control endpoints are off: this UI is reachable from off this machine with no token. Bind it to loopback or set --ui-token.",
+        }),
+      );
+      return;
+    }
+    try {
+      await fn();
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (err) {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }));
+    }
+  };
+
+  /**
+   * Control endpoints, registered once below and consulted first inside the
+   * request handler. A list because every control is the same shape and the
+   * main handler stays exactly as it was.
+   */
+  const serverControlHandlers: ((
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    url: URL,
+  ) => boolean)[] = [];
+
+  if (opts.controls) {
+    const c = opts.controls;
+    serverControlHandlers.push((req, res, url) => {
+      if (req.method !== "POST" || !url.pathname.startsWith("/ctl/")) return false;
+      const action = url.pathname.slice("/ctl/".length);
+      void (async () => {
+        const body = await readJson(req);
+        if (action === "root") {
+          await control(res, () => c.setRoot(String(body?.path ?? "")));
+        } else if (action === "human") {
+          await control(res, () => c.setHuman(body?.enabled === true));
+        } else if (action === "approval") {
+          await control(res, () => c.setApproval(body?.mode === "always" ? "always" : "never"));
+        } else if (action === "mcp-connect") {
+          await control(res, () =>
+            c.mcpConnect(String(body?.name ?? ""), body?.config ?? undefined),
+          );
+        } else if (action === "mcp-disconnect") {
+          await control(res, () => c.mcpDisconnect(String(body?.name ?? "")));
+        } else {
+          res.writeHead(404, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: `unknown control: ${action}` }));
+        }
+      })();
+      return true;
+    });
+  }
+
   const server = http.createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (!authorized(req, url, opts.token)) {
@@ -88,6 +202,10 @@ export function startWebUI(channel: HumanChannel, opts: WebUIOptions) {
     }
 
     if (vendorFile(req, res, url)) return;
+
+    for (const handler of serverControlHandlers) {
+      if (handler(req, res, url)) return;
+    }
 
     if (req.method === "GET" && url.pathname === "/") {
       // Read per request, not once at startup. The page is the part people

@@ -43,7 +43,8 @@ const ep = `http://127.0.0.1:${PORT}/mcp`;
 const child = spawn(process.execPath,
   ["src/index.ts", "--root", root, "--http", "--port", String(PORT), "--token", TOKEN,
    "--ui-port", String(UI), "--human"],
-  { stdio: ["ignore", "pipe", "pipe"] });
+  { stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, PI_AS_MCP_CONFIG: path.resolve(".tmp-probe-config", "none.json") } });
 const serverLog = [];
 child.stderr.on("data", (d) => {
   for (const line of d.toString().split("\n")) if (line.trim()) serverLog.push(line.trim());

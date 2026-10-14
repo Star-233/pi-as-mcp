@@ -19,10 +19,13 @@ fs.mkdirSync(root, { recursive: true });
 fs.writeFileSync(path.join(root, "a.txt"), "alpha\n");
 
 const PORT = 8800, UI = 8793, TOKEN = "ui-probe-token-0xDEADBEEF";
+// Isolated from the developer's own ~/.pimcp/config.json (a missing file reads
+// as "no file"), so the probe asserts this bridge's defaults, not their setup.
 const child = spawn(process.execPath,
   ["src/index.ts", "--root", root, "--http", "--port", String(PORT), "--token", TOKEN,
    "--ui-port", String(UI), "--ui-token", TOKEN, "--human"],
-  { stdio: ["ignore", "pipe", "pipe"] });
+  { stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, PI_AS_MCP_CONFIG: path.resolve(".tmp-probe-config", "none.json") } });
 const logs = [];
 child.stderr.on("data", (d) => logs.push(d.toString()));
 

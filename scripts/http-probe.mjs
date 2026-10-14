@@ -9,10 +9,13 @@ fs.mkdirSync(root, { recursive: true });
 fs.writeFileSync(path.join(root, "a.txt"), "alpha\n");
 
 const PORT = 8799, TOKEN = "s3cret-token", UI = 8792;
+// Isolated from the developer's own ~/.pimcp/config.json: a path that does not
+// exist reads as "no file", so the probe tests defaults, not their daily setup.
 const child = spawn(process.execPath,
   ["src/index.ts", "--root", root, "--http", "--port", String(PORT), "--token", TOKEN,
    "--ui-port", String(UI), "--human", "--approve", "bash"],
-  { stdio: ["ignore", "pipe", "pipe"] });
+  { stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, PI_AS_MCP_CONFIG: path.resolve(".tmp-probe-config", "none.json") } });
 const logs = [];
 child.stderr.on("data", (d) => logs.push(d.toString()));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -84,8 +87,14 @@ try {
   const list = await mcp("tools/list", {});
   console.log("3) tools/list      ->", list.msg?.result?.tools?.length, "tools");
 
-  const read = await mcp("tools/call", { name: "read", arguments: { path: "a.txt" } });
-  console.log("4) read            ->", JSON.stringify(firstText(read)));
+  // Every tool is gated now: --approve means approval mode "always", read
+  // included - a remote model that can read can look around, so the gate is one
+  // setting for everything rather than a per-tool list to keep complete.
+  const readP = mcp("tools/call", { name: "read", arguments: { path: "a.txt" } });
+  await sleep(700);
+  await post("yes");
+  const read = await readP;
+  console.log("4) read + approve  ->", JSON.stringify(firstText(read)));
 
   // --- bash approval gate (fail closed) ---
   const denyP = mcp("tools/call", { name: "bash", arguments: { command: "echo SHOULD-NOT-RUN" } });

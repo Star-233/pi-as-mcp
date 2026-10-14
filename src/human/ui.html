@@ -678,8 +678,11 @@ function updateSide() {
   h += kv('pid', String(info.pid || ''));
   h += kv('node', esc(info.node || '') + ' · ' + esc(info.platform || ''));
   h += '<h3>tools</h3>' + chips(info.tools);
-  h += '<h3>human approval</h3>' + (info.approve && info.approve.length
-    ? chips(info.approve, 'warn') + '<div class="note" style="margin-top:5px">these calls block on a yes/no in the log</div>'
+  h += '<div id="ctl"></div>';
+  var approvalAlways = info.approvalMode === 'always' ||
+    (info.approvalMode === undefined && info.approve && info.approve.length);
+  h += '<h3>human approval</h3>' + (approvalAlways
+    ? '<div class="note">every call blocks on a yes/no in the log</div>'
     : '<div class="note">none — every call runs immediately</div>');
   h += '<h3>denied paths</h3>' + chips(info.deny);
   h += '<h3>limits</h3>';
@@ -709,6 +712,214 @@ function updateSide() {
     'Anyone who can reach it can authorize themselves. Bind it to loopback or set ' +
     '<code>--ui-token</code>.</div>';
   side.innerHTML = h;
+  renderControls();
+}
+
+/* ---------------------------------------------------------------- controls
+ * Runtime steering of the bridge: move the sandbox root, flip the human channel
+ * or the approval mode, attach and detach upstream MCP servers. These endpoints
+ * change what this machine does, so the server refuses them whenever this page
+ * is reachable from off the machine with no token - info.controls says which
+ * way it is, and the note below explains it rather than leaving dead buttons.
+ * Everything is built with createElement: the upstream names and errors come
+ * from the config file, and none of it may pass through innerHTML.
+ */
+var ctlBusy = false;
+function postCtl(action, body) {
+  if (ctlBusy) return;
+  ctlBusy = true;
+  fetch('/ctl/' + action + '?token=' + encodeURIComponent(token), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  }).then(function (r) { return r.json(); })
+    .then(function (j) {
+      ctlBusy = false;
+      if (j && j.ok === false) ctlFlash(j.error || 'failed');
+      loadInfo();
+    })
+    .catch(function (e) { ctlBusy = false; ctlFlash(String(e)); });
+}
+function ctlFlash(msg) {
+  var el = document.getElementById('ctl-flash');
+  if (!el) return;
+  el.textContent = msg;
+  el.style.display = 'block';
+  clearTimeout(el._t);
+  el._t = setTimeout(function () { el.style.display = 'none'; }, 8000);
+}
+function ctlBtn(label, title, onclick, active) {
+  var b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'iconbtn' + (active ? ' on' : '');
+  b.textContent = label;
+  if (title) b.title = title;
+  b.onclick = onclick;
+  return b;
+}
+function ctlInput(value, placeholder) {
+  var i = document.createElement('input');
+  i.type = 'text';
+  i.value = value || '';
+  i.placeholder = placeholder || '';
+  i.style.cssText = 'width:100%;background:var(--panel2);border:1px solid var(--line2);' +
+    'border-radius:6px;color:var(--fg);padding:4px 7px;font:11px ui-monospace,Consolas,monospace;';
+  return i;
+}
+function ctlKv(label) {
+  var row = document.createElement('div');
+  row.className = 'kv';
+  var k = document.createElement('span');
+  k.className = 'k';
+  k.textContent = label;
+  row.appendChild(k);
+  return row;
+}
+function renderControls() {
+  var host = document.getElementById('ctl');
+  if (!host) return;
+  host.textContent = '';
+  if (!info || !info.configPath) return;   // an old/mock info shape: no controls
+  var h = document.createElement('h3');
+  h.textContent = 'controls';
+  host.appendChild(h);
+
+  if (info.controls === false) {
+    var off = document.createElement('div');
+    off.className = 'note';
+    off.textContent = 'This page is reachable from off this machine with no token, so the control ' +
+      'endpoints are off. Bind the UI to loopback or set a UI token to use them.';
+    host.appendChild(off);
+    return;
+  }
+
+  var flash = document.createElement('div');
+  flash.id = 'ctl-flash';
+  flash.className = 'note';
+  flash.style.display = 'none';
+  flash.style.color = 'var(--red)';
+
+  // --- sandbox root ---
+  var rootBox = document.createElement('div');
+  rootBox.style.margin = '4px 0 10px';
+  var rootIn = ctlInput(info.root || '', 'D:\\some\\directory');
+  rootIn.title = 'the directory the agent can work in - switch it while the bridge runs';
+  rootBox.appendChild(rootIn);
+  var rootBtn = ctlBtn('switch root', 'move the sandbox root (applies immediately)', function () {
+    postCtl('root', { path: rootIn.value });
+  });
+  rootBtn.style.display = 'block';
+  rootBtn.style.marginTop = '4px';
+  rootBox.appendChild(rootBtn);
+  host.appendChild(rootBox);
+
+  // --- approval mode ---
+  var approvalAlways = info.approvalMode === 'always' ||
+    (info.approvalMode === undefined && info.approve && info.approve.length);
+  var ap = ctlKv('approval');
+  var apBtns = document.createElement('div');
+  apBtns.className = 'chips';
+  apBtns.appendChild(ctlBtn('every call', 'every tool call waits for your yes/no in the log',
+    function () { postCtl('approval', { mode: 'always' }); }, approvalAlways));
+  apBtns.appendChild(ctlBtn('never', 'tool calls run without approval',
+    function () { postCtl('approval', { mode: 'never' }); }, !approvalAlways));
+  ap.appendChild(apBtns);
+  host.appendChild(ap);
+
+  // --- human channel ---
+  var listening = info.human !== false;
+  var hm = ctlKv('chat');
+  var hb = document.createElement('div');
+  hb.className = 'chips';
+  hb.appendChild(ctlBtn(listening ? 'on' : 'off',
+    'whether the agent gets human_say/ask/wait',
+    function () { postCtl('human', { enabled: !listening }); }, listening));
+  hm.appendChild(hb);
+  host.appendChild(hm);
+
+  // --- upstream MCP servers ---
+  var mh = document.createElement('h3');
+  mh.textContent = 'mcp upstreams';
+  host.appendChild(mh);
+  var list = info.mcps || [];
+  if (!list.length) {
+    var none = document.createElement('div');
+    none.className = 'note';
+    none.textContent = 'none - attach other MCP servers below; entries in the config file ' +
+      'load automatically and can be switched off without removing them.';
+    host.appendChild(none);
+  }
+  for (var i = 0; i < list.length; i++) {
+    (function (m) {
+      var row = document.createElement('div');
+      row.className = 'kv';
+      var k = document.createElement('span');
+      k.className = 'k';
+      k.textContent = m.name;
+      row.appendChild(k);
+      var v = document.createElement('div');
+      v.className = 'chips';
+      var cls = m.status === 'connected' ? 'good' : m.status === 'error' ? 'bad' :
+        m.status === 'connecting' ? 'warn' : '';
+      var chip = document.createElement('span');
+      chip.className = 'chip ' + cls;
+      chip.textContent = m.status + (m.toolCount ? ' · ' + m.toolCount + ' tools' : '');
+      v.appendChild(chip);
+      if (m.enabled === false) {
+        var offChip = document.createElement('span');
+        offChip.className = 'chip';
+        offChip.textContent = 'off';
+        v.appendChild(offChip);
+      }
+      var connected = m.status === 'connected' || m.status === 'connecting';
+      v.appendChild(ctlBtn(connected ? 'disconnect' : 'connect',
+        connected ? 'detach this upstream' : 'connect this upstream',
+        function () {
+          postCtl(connected ? 'mcp-disconnect' : 'mcp-connect', { name: m.name });
+        }));
+      row.appendChild(v);
+      host.appendChild(row);
+      if (m.error) {
+        var err = document.createElement('div');
+        err.className = 'note';
+        err.style.color = 'var(--red)';
+        err.textContent = m.error;
+        host.appendChild(err);
+      }
+    })(list[i]);
+  }
+
+  // --- add an upstream ---
+  var addBox = document.createElement('div');
+  addBox.style.margin = '6px 0 2px';
+  var nameIn = ctlInput('', 'name (e.g. github)');
+  addBox.appendChild(nameIn);
+  var typeSel = document.createElement('select');
+  typeSel.style.cssText = nameIn.style.cssText + 'margin:4px 0;display:block;';
+  var optStd = document.createElement('option'); optStd.value = 'stdio'; optStd.textContent = 'stdio (a local command)';
+  var optHttp = document.createElement('option'); optHttp.value = 'http'; optHttp.textContent = 'http (a remote /mcp URL)';
+  typeSel.appendChild(optStd); typeSel.appendChild(optHttp);
+  addBox.appendChild(typeSel);
+  var cmdIn = ctlInput('', 'command, or https://host/mcp');
+  cmdIn.style.margin = '4px 0';
+  addBox.appendChild(cmdIn);
+  var addBtn = ctlBtn('add & connect', 'save it to the config file and connect now', function () {
+    var config = typeSel.value === 'stdio'
+      ? { type: 'stdio', command: cmdIn.value.trim() }
+      : { type: 'http', url: cmdIn.value.trim() };
+    postCtl('mcp-connect', { name: nameIn.value, config: config });
+  });
+  addBtn.style.display = 'block';
+  addBtn.style.marginTop = '4px';
+  addBox.appendChild(addBtn);
+  var hdrNote = document.createElement('div');
+  hdrNote.className = 'note';
+  hdrNote.style.marginTop = '4px';
+  hdrNote.textContent = 'an http upstream with extra headers (Authorization) is added by editing the config file, not here';
+  addBox.appendChild(hdrNote);
+  host.appendChild(addBox);
+
+  host.appendChild(flash);
 }
 function loadInfo() {
   fetch('/info?token=' + encodeURIComponent(token))
@@ -720,8 +931,8 @@ function loadInfo() {
 loadInfo();
 setInterval(function () {
   fetch('/health?token=' + encodeURIComponent(token)).catch(function () {});
-  updateSide();
-}, 10000);
+  loadInfo();
+}, 5000);
 
 /* ---------------------------------------------------------------- chrome */
 var sidebtn = document.getElementById('sidebtn');

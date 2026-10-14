@@ -1,4 +1,11 @@
-import { loadConfig } from "../src/config.ts";
+import path from "node:path";
+
+// Set before the dynamic import below: a static import would hoist above this
+// assignment, so the config loader would already have read the developer's own
+// ~/.pimcp/config.json and these "default" checks would depend on their daily
+// setup. A path that does not exist reads as "no file" - a fresh machine.
+process.env.PI_AS_MCP_CONFIG = path.resolve(".tmp-probe-config", "none.json");
+const { loadConfig } = await import("../src/config.ts");
 
 const expectedTools =
   process.platform === "win32"

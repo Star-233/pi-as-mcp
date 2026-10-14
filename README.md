@@ -63,6 +63,53 @@ pimcp --human           # ...and the human channel, so the agent can talk to you
 pimcp --no-oauth        # ...without the authorization server (the client needs the token)
 ```
 
+## The configuration file
+
+`~/.pimcp/config.json` (moved with `PI_AS_MCP_CONFIG`) is one place for everything a run can
+be steered by. A flag given on the command line beats the file; the file beats the defaults.
+
+```json
+{
+  "human": true,
+  "approval": { "mode": "always" },
+  "mcps": {
+    "github": { "type": "stdio", "command": "npx", "args": ["-y", "some-mcp-server"] },
+    "remote": { "type": "http", "url": "https://host.example/mcp", "headers": { "Authorization": "Bearer …" } }
+  },
+  "tunnel": {
+    "enabled": true,
+    "mode": "named", "hostname": "mcp.example.com",
+    "name": "my-tunnel", "credentialsFile": "C:/.../tunnel-credentials.json"
+  }
+}
+```
+
+- **`human`** turns the human channel on, like `--human`.
+- **`approval`** is one setting for every tool: `"always"` holds each call — `read` included,
+  and upstream tools too — for a yes/no in the web UI; `"never"` lets everything run. It needs
+  the human channel on; that combination is refused rather than auto-approving. (`--approve`
+  still works and means `"always"`.)
+- **`mcps`** are other MCP servers, attached as upstreams at startup. Their tools appear with
+  the upstream's name as a prefix (`github_list`), behind the same approval gate and timeline
+  as the local ones. An entry with `"enabled": false` stays configured but disconnected.
+- **`tunnel`** picks the quick tunnel (random hostname, the default) or **a named tunnel with
+  your own hostname**: give `name` + `credentialsFile` (route its DNS once with
+  `cloudflared tunnel route dns`) or `token` (a dashboard-managed tunnel, whose ingress points
+  at `http://localhost:8777`), plus `hostname`.
+
+The file is watched: `human`, `approval` and `mcps` apply to a running bridge without a
+restart, and the same controls exist as buttons in the web UI. The tunnel layer is
+restart-only — the log says so when it changes.
+
+### Steering a running bridge from the web UI
+
+The sidebar has a **controls** section (loopback UIs, or any UI with a token): switch the
+sandbox root to another directory, flip the human channel or the approval mode, and connect /
+disconnect upstream MCP servers or add new ones. Every action writes back to the config file,
+so an editor and the UI cannot drift apart. A UI that is reachable from off the machine with
+no token serves none of the control endpoints — the same rule that governs OAuth approvals.
+Moving the root is deliberately a human-only action: the agent has no tool for it.
+
 `pimcp` roots the server at the **current directory**, picks free ports, mints a bearer
 token, opens a Cloudflare quick tunnel, waits for cloudflared to register with the edge,
 opens the web UI, and prints the MCP URL and token. Ctrl-C stops everything.
@@ -295,7 +342,7 @@ table row.
 | `--root` | `PI_AS_MCP_ROOT` | cwd | Sandbox root. Every path argument is confined here. |
 | `--human` | `PI_AS_MCP_HUMAN=1` | off | Expose the human channel: `human_say`/`human_ask`/`human_wait` and the approval gate. The web UI comes with it, but is not exclusive to it — `--oauth` starts the UI too. |
 | `--tools` | `PI_AS_MCP_TOOLS` | 7 on Linux, 8 on Windows | Comma-separated subset to expose. `powershell` is Windows-only. |
-| `--approve` | `PI_AS_MCP_APPROVE` | none | Tools that require human approval, e.g. `bash`. **Needs `--human`**: with no human there is nobody to ask, so the bridge refuses to start instead of auto-approving. |
+| `--approve` | `PI_AS_MCP_APPROVE` | none | Approval mode `"always"`: **every** tool call waits for a yes/no in the web UI (the tool list a value used to name is now ignored — one setting covers everything, upstreams included). **Needs `--human`**: with no human there is nobody to ask, so the bridge refuses to start instead of auto-approving. |
 | `--deny` | `PI_AS_MCP_DENY` | `.ssh,.aws,.gnupg,.git-credentials,.netrc,.config/gcloud` | Paths refused even inside the root. |
 | `--block-ms` | `PI_AS_MCP_BLOCK_MS` | 90000 | Max time `human_ask`/`human_wait` block before returning `no_message`. |
 | `--http` | `PI_AS_MCP_HTTP=1` | off | Serve Streamable HTTP instead of stdio. |
@@ -333,10 +380,11 @@ design, so:
   the process ends). Denying a request that has not been answered yet is the only way to
   refuse — once granted, the way to take it back is to restart the bridge. Keep the run short;
   that is what this process is for.
-- **Use `--human --approve bash` (and `powershell`) if you want a gate per command.** Every
-  shell command then blocks on a yes/no prompt in the human UI. It **fails closed**: no answer
-  means denied. The gate needs `--human`, because with the human channel off there is nobody to
-  ask — the bridge refuses to start rather than let `--approve` silently mean "allow".
+- **Use `--human --approve` if you want a gate on every call.** Every tool call then blocks on
+  a yes/no prompt in the human UI — all of them, `read` included, upstream MCP tools too: one
+  setting, no per-tool list to keep complete. It **fails closed**: no answer means denied. The
+  gate needs `--human`, because with the human channel off there is nobody to ask — the bridge
+  refuses to start rather than let `--approve` silently mean "allow".
 - **Rotate the token per sitting.** For one-shot use, quick tunnels that change hostname are
   fine — they expire on their own.
 - Tool output (file contents, command output) transits the remote platform and may be logged
@@ -404,7 +452,7 @@ The recipient runs it from the directory the agent should own:
 ```
 pimcp.cmd                          # Windows: tunnel + localhost, prints both URLs
 ./pimcp.sh                         # Linux
-./pimcp.sh --human --approve bash  # with the human channel and a shell gate
+./pimcp.sh --human --approve       # with the human channel and an approval gate
 ```
 
 Every flag the bridge understands works unchanged. On startup it prints an **MCP URL you

@@ -95,7 +95,9 @@ export function buildPromptSections(cfg: Config, tools: AdaptedTool[]): Record<s
   const sections: Record<string, string> = {
     preamble: PREAMBLE,
     tools: `${toolsBlock}\n\nIn addition to the tools above, you may have access to other custom tools depending on the project.`,
-    rules: buildRules(tools),
+    rules: cfg.approvalMode === "always"
+      ? `${buildRules(tools)}\n- Every tool call is held for the human's approval before it runs. A denial is their answer to that call, not a failure: acknowledge it and wait for their guidance`
+      : buildRules(tools),
     cwd: cfg.root.replace(/\\/g, "/"),
   };
   // The <human> section is the entire instruction surface for the human channel.

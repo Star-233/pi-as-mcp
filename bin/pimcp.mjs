@@ -14,10 +14,33 @@
  */
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import fs from "node:fs";
 import { createServer } from "node:net";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+
+/**
+ * The unified configuration file, same place the server reads it: tunnel settings
+ * and the human channel are decided here, upstream MCP servers and the approval
+ * mode in the server. A malformed file is warned about and ignored - the same
+ * rule the server applies, so one broken edit cannot leave the two disagreeing.
+ */
+const CONFIG_PATH = process.env.PI_AS_MCP_CONFIG || path.join(os.homedir(), ".pimcp", "config.json");
+
+function readConfigFile() {
+  try {
+    const raw = fs.readFileSync(CONFIG_PATH, "utf8");
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch (e) {
+    if (e && e.code !== "ENOENT") {
+      process.stderr.write(`pimcp: warning: could not read ${CONFIG_PATH} (${e && e.message ? e.message : e}) - the file was ignored\n`);
+    }
+    return {};
+  }
+}
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const ENTRY = path.join(REPO, "src", "index.ts");
@@ -35,6 +58,22 @@ nowhere else. Run it from the directory you want the agent to work in.
 OPTIONS
   --no-tunnel          Do not start a Cloudflare tunnel (localhost only).
   --root <dir>         Override the sandbox root (default: current directory).
+
+  Most settings also come from ~/.pimcp/config.json (PI_AS_MCP_CONFIG to move
+  it): { human, approval: { mode }, mcps: {...}, tunnel: { enabled, mode:
+  "quick"|"named", name, credentialsFile, token, hostname, cloudflaredPath } }.
+  A flag given on the command line overrides the file; the file overrides the
+  built-in defaults.
+
+TUNNEL MODES
+  quick  The zero-setup default: a random *.trycloudflare.com hostname, new
+         every restart.
+  named  Your own hostname, stable across restarts. Give either
+         name + credentialsFile (a locally-managed tunnel, route its DNS once
+         with \`cloudflared tunnel route dns\`) or token (a dashboard-managed
+         tunnel, whose ingress is configured in the dashboard to point at
+         http://localhost:<port> - keep the MCP port free at its default, 8777).
+         hostname is the public name clients reach, e.g. mcp.example.com.
   --token <token>      Use this bearer token instead of a generated one.
   --port <n>           MCP HTTP port (default: 8777, or a free one if taken).
   --ui-port <n>        Human web UI port (default: 8790, or a free one if taken).
@@ -64,8 +103,10 @@ Passed through to the server:
   --issuer <url>       The URL clients reach, e.g. https://mcp.example.com. Only with
                        --oauth. Defaults to the quick-tunnel hostname, or to
                        http://127.0.0.1:<port> when there is no tunnel.
-  --approve <tools>    Require human approval before these tools run, e.g. bash.
-                       Needs --human.
+  --approve           Approval mode "always": every tool call (upstreams included)
+                       waits for a yes/no in the human UI. Any value after the flag is
+                       accepted for compatibility but ignored - the list is gone, one
+                       setting covers everything. Needs --human.
   --deny <paths>       Extra paths to refuse even inside the root.
   --tools <list>       Expose only this comma-separated subset.
   --block-ms <n>       Max time human_ask/human_wait block (default 90000).
@@ -86,9 +127,10 @@ const PASSTHROUGH_BOOL_FLAGS = new Set(["--human", "--oauth"]);
 
 function parseArgs(argv) {
   const opts = {
-    tunnel: true,
+    // null = not decided on the command line; the config file answers next.
+    tunnel: null,
     open: true,
-    human: false,
+    human: null,
     // On by default, unlike the server's own flag: the launcher's job is the
     // remote-agent case, where the client needs some way in and an authorization
     // it grants itself beats a token pasted between two chat windows.
@@ -104,6 +146,9 @@ function parseArgs(argv) {
     passthrough: [],
     help: false,
   };
+  const fileConfig = readConfigFile();
+  const tunnelFile = fileConfig.tunnel || {};
+
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     const next = () => {
@@ -133,6 +178,22 @@ function parseArgs(argv) {
     else if (arg.startsWith("--")) opts.passthrough.push(arg);
     else throw new Error(`unknown argument: ${arg}`);
   }
+  // The file answers what the command line did not. The human channel matters
+  // here (the banner and the browser depend on it) as well as in the server.
+  if (opts.tunnel === null) opts.tunnel = tunnelFile.enabled !== false;
+  if (opts.human === null) opts.human = fileConfig.human === true;
+  opts.tunnelFile = tunnelFile;
+  opts.fileConfig = fileConfig;
+  // Approval comes from the file, or from a --approve on the command line (the
+  // server reads the same file and the same flag); checked here so the failure
+  // is one clear line at start instead of a server exit.
+  const approvalAlways =
+    (fileConfig.approval && fileConfig.approval.mode === "always") ||
+    opts.passthrough.includes("--approve");
+  if (approvalAlways && !opts.human) {
+    throw new Error('approval mode "always" needs the human channel: add --human, or set human: true in the config file.');
+  }
+
   // Forward the resolved values rather than what was typed, so a later --no-human
   // cannot leave an --oauth behind that the server would then have to reject.
   if (opts.human) opts.passthrough.push("--human");
@@ -238,6 +299,60 @@ function startServer({ root, port, uiPort, token, issuer, passthrough }) {
 }
 
 /**
+ * A named tunnel: your own hostname, from `tunnel: { mode: "named" }` in the
+ * config file. Unlike a quick tunnel there is nothing to discover in the
+ * output - the hostname is DNS-routed to the tunnel, and this run only waits
+ * for the same "Registered tunnel connection" line before calling it up.
+ */
+function startNamedTunnel(port, t) {
+  const bin = t.cloudflaredPath || "cloudflared";
+  let args;
+  if (t.token) {
+    // Dashboard-managed: ingress lives in the dashboard and points at
+    // http://localhost:<port>; there is no --url to set on this side.
+    args = ["tunnel", "run", "--token", t.token, "--no-autoupdate"];
+  } else if (t.name && t.credentialsFile) {
+    args = ["tunnel", "run", "--cred-file", t.credentialsFile,
+            "--url", `http://127.0.0.1:${port}`, "--no-autoupdate", t.name];
+  } else {
+    process.stderr.write(
+      '  named tunnel config is incomplete: give token, or name + credentialsFile (and hostname).\n');
+    return { child: null, url: Promise.resolve(null), registered: Promise.resolve(false), log: () => "" };
+  }
+  if (!t.hostname) {
+    process.stderr.write("  named tunnel config is missing hostname (e.g. mcp.example.com) - the URL to paste cannot be known.\n");
+    return { child: null, url: Promise.resolve(null), registered: Promise.resolve(false), log: () => "" };
+  }
+  const base = `https://${t.hostname.replace(/^https?:\/\//, "").replace(/\/$/, "")}`;
+
+  const child = supervise(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
+  let log = "";
+  let settleRegistered = null;
+  const registered = new Promise((r) => (settleRegistered = r));
+  const onData = (d) => {
+    log += d.toString();
+    if (settleRegistered && /Registered tunnel connection/i.test(log)) {
+      settleRegistered(true);
+      settleRegistered = null;
+    }
+  };
+  child.stdout.on("data", onData);
+  child.stderr.on("data", onData);
+  child.on("error", (e) => {
+    const msg = e.code === "ENOENT" ? `${bin} is not on PATH (set tunnel.cloudflaredPath)` : e.message;
+    if (settleRegistered) { settleRegistered(false); settleRegistered = null; }
+    process.stderr.write(`  ${msg}\n`);
+  });
+  child.on("exit", (code) => {
+    if (settleRegistered) { settleRegistered(false); settleRegistered = null; }
+    if (code !== 0) process.stderr.write(`  cloudflared exited (code ${code})\n`);
+  });
+  setTimeout(() => { if (settleRegistered) { settleRegistered(false); settleRegistered = null; } }, 60000);
+
+  return { child, url: Promise.resolve(base), registered, log: () => log };
+}
+
+/**
  * The quick-tunnel hostname appears in cloudflared's output *before* the edge
  * connection is up, so the URL alone proves nothing. The reliable signal is
  * cloudflared logging that it registered a tunnel connection.
@@ -287,13 +402,15 @@ function startTunnel(port) {
 }
 
 /**
- * Start a quick tunnel and wait for its hostname. A missing hostname is reported
+ * Start a tunnel and wait for its hostname. A missing hostname is reported
  * here, once, because it is the same outcome whether the tunnel was opened early
- * (for --oauth) or late.
+ * (for --oauth) or late. Named tunnels know their URL from the config; quick
+ * tunnels only from cloudflared's output.
  */
-async function openTunnel(port) {
-  process.stdout.write("  opening a Cloudflare tunnel…\n");
-  const t = startTunnel(port);
+async function openTunnel(port, tunnelFile) {
+  const named = tunnelFile && tunnelFile.mode === "named";
+  process.stdout.write(named ? `  opening the named tunnel ${tunnelFile.hostname}…\n` : "  opening a Cloudflare tunnel…\n");
+  const t = named ? startNamedTunnel(port, tunnelFile) : startTunnel(port);
   const base = await t.url;
   if (!base) {
     process.stderr.write("  could not get a tunnel URL — falling back to localhost only.\n");
@@ -389,6 +506,9 @@ async function main() {
 
   try {
     process.stdout.write(`\n  starting pi-as-mcp for ${opts.root}\n`);
+    if (opts.fileConfig.approval && opts.fileConfig.approval.mode === "always") {
+      process.stdout.write("  approval: every tool call waits for a yes/no in the human UI\n");
+    }
 
     // With --oauth the tunnel has to be up *before* the server starts. The
     // authorization server advertises a single issuer in its metadata, and a client
@@ -396,7 +516,7 @@ async function main() {
     // public hostname, which exists only once cloudflared has printed it.
     let publicBase = null;
     if (opts.tunnel && opts.oauth && !opts.issuer) {
-      const opened = await openTunnel(port);
+      const opened = await openTunnel(port, opts.tunnelFile);
       tunnel = opened.tunnel;
       publicBase = opened.base;
     }
@@ -408,7 +528,7 @@ async function main() {
     let publicMcp = null;
     if (opts.tunnel) {
       if (!tunnel) {
-        const opened = await openTunnel(port);
+        const opened = await openTunnel(port, opts.tunnelFile);
         tunnel = opened.tunnel;
         publicBase = opened.base;
       }

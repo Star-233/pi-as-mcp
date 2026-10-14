@@ -35,12 +35,14 @@ full, including the edits that were uncommitted at the time, at tag `humanchat-f
 | `src/index.ts` | Entry point. Config, human UI, HTTP (an express app) or stdio transport, the bearer check, the OAuth router. |
 | `src/pi-tools.ts` | Imports Pi's tool definitions and adapts them to MCP. |
 | `src/prompt.ts` | Reproduces Pi's system-prompt algorithm, plus the `<human>` section. |
-| `src/server.ts` | MCP server: tool list, human tools, approval gate. |
-| `src/sandbox.ts` | Path containment + deny list. |
+| `src/server.ts` | MCP server: tool list, human tools, approval gate (one setting for every tool), upstream tool forwarding. |
+| `src/sandbox.ts` | Path containment + deny list. The root is movable at runtime (`setRoot`), by the human through the web UI only. |
+| `src/config-file.ts` | The unified config file `~/.pimcp/config.json`: read (a broken file is ignored, never fatal), atomic write-back, and a debounced directory watcher. `PI_AS_MCP_CONFIG` moves it. |
+| `src/attach-mcp.ts` | Attaches other MCP servers as upstreams and re-exposes their tools with the upstream's name as a prefix. One upstream down isolates itself; a prefixed name that would shadow a bridge tool is skipped. |
 | `src/oauth.ts` | The OAuth 2.1 authorization server's storage and its one human decision: clients, consent requests, codes, tokens. |
 | `src/oauth-http.ts` | `/authorize` and `/token`, written here instead of taken from the SDK router: PKCE required only from a public client, the secret accepted in the body or as HTTP Basic, and a redirect URI the client was never configured with accepted for a confidential client (the human's click decides it). Mounted before `mcpAuthRouter`, so it shadows those two paths in it. |
 | `src/human/channel.ts` | In-memory single-human channel (the whole "session" story). Chat *and* tool-call entries share one ordered list. |
-| `src/human/webui.ts`, `ui.html` | The web UI (SSE + POST): timeline, runtime info panel, wait countdown, alerts, the **Allow/Deny cards** that are the only way to grant an authorization — and, when `--human` is off, the same page as an approval console with no composer. |
+| `src/human/webui.ts`, `ui.html` | The web UI (SSE + POST): timeline, runtime info panel, wait countdown, alerts, the **Allow/Deny cards** that are the only way to grant an authorization — and, when `--human` is off, the same page as an approval console with no composer. The sidebar's `/ctl/*` endpoints steer the running bridge (root, human channel, approval mode, upstream MCPs); they are refused outright while the UI is reachable off this machine with no token. |
 | `src/human/vendor/` | marked + KaTeX, copied from `node_modules` by `npm run vendor-ui`. Committed; the UI must work with no network. |
 |`scripts/*.mjs`|Probes that drive the real server over real MCP traffic.|
 |`scripts/package.mjs`|Builds `dist/<platform>-<arch>/`: bundled JS (Pi's tools inlined) + the UI assets + a Node runtime + cloudflared, so the recipient needs nothing installed.|
@@ -52,6 +54,8 @@ full, including the edits that were uncommitted at the time, at tag `humanchat-f
 | `scripts/oauth-probe.mjs` | The whole authorization flow, including the negatives: a replayed code, a wrong PKCE verifier, a denial, a forged decision, an untrusted client name. Runs three servers, because the shape of the client decides the shape of the flow: the spec-shaped one, a hosted "custom connected app" with no PKCE, and the default one where the redirect URI arrives late. |
 | `scripts/ui-probe.mjs` | Drives the UI's HTTP surface: page, vendored assets, `/info`, `/health`, the SSE stream. Asserts; exits non-zero. |
 | `scripts/ui-render-probe.mjs` | Runs the page's own inline script in jsdom against the vendored libs and asserts what it renders, authorization cards included. |
+| `scripts/controls-probe.mjs` | The unified config file, the movable sandbox root, the upstream aggregator, and the web UI's `/ctl` endpoints over real traffic — plus the hot-reload watcher. |
+| `scripts/fixtures/mini-mcp-server.mjs` | The smallest possible MCP server (two tools over stdio), so the aggregator can be tested against a real upstream with no network. |
 | `bin/supervise.mjs` | Parent-death watchdog so children cannot outlive the launcher. |
 
 ## Commands
@@ -61,7 +65,7 @@ directly via Node's type stripping — there is no build step).
 
 ```bash
 npm install
-npm test          # config defaults + stdio probe + HTTP/auth/approval probe + the OAuth flow + both UI probes
+npm test          # config defaults + stdio probe + HTTP/auth/approval probe + controls + the OAuth flow + both UI probes
 npm run typecheck # tsc --noEmit
 npm run vendor-ui # re-copy marked + KaTeX into src/human/vendor
 npm run prompt    # print the ported system prompt
@@ -84,6 +88,14 @@ node src/index.ts --root <dir> --http --oauth --issuer https://host
 `--oauth` needs `--http`, and it starts the web UI — not the human channel. The UI is where
 an authorization is approved; `--human` is whether the agent can also *talk* to you. All
 environment variables use the `PI_AS_MCP_` prefix.
+
+`~/.pimcp/config.json` (moved with `PI_AS_MCP_CONFIG`) unifies what a run is steered by:
+`human`, `approval: { mode: "always" | "never" }`, `mcps` (upstream MCP servers) and `tunnel`
+(quick or named, your own hostname). An explicit flag beats the file; the file beats the
+defaults. Its hot layer — the human channel, the approval mode, the upstreams — applies to a
+running bridge through the watcher; the tunnel layer is restart-only and says so when it
+changes. The probes point `PI_AS_MCP_CONFIG` at a path that does not exist, so they assert
+this bridge's defaults rather than the developer's daily setup.
 
 ## Invariants — do not regress these
 
@@ -394,7 +406,7 @@ port to the internet.
   quick tunnel, whose hostname changes every time.
 - **Security.** This bridge hands a remote model a shell on the host. `--root` confines path
   arguments only. Run it in a container with one mounted work directory, always set `--token`
-  when using `--http`, and prefer `--approve bash`.
+  when using `--http`, and prefer `--approve`.
 
 - **`var status` in the human UI silently did nothing, for the life of the file.** `window.status`
   is a legacy accessor whose setter coerces to a string, so the top-level
@@ -452,6 +464,10 @@ port to the internet.
   boundary, not styling; `scripts/ui-render-probe.mjs` asserts against `<script>`, `<img>`, inline
   handlers and `javascript:` URLs. Do not loosen it to fix a rendering complaint without adding a
   case to that probe.
+
+15. **The hot layer of the config file is applied, not diffed.** The watcher debounces bursts of UI saves into one read, so comparing against the previous read can miss a field that went A → B → A while the in-memory state still holds B. Every hot read sets the state from the file unconditionally (idempotent, always converging); `prev` is for the change log only. A UI reconnect of an upstream must also clear the `enabled: false` its disconnect wrote, or the next reconcile silently disconnects it again.
+16. **The `/ctl` endpoints are as sensitive as the OAuth decision.** They move the sandbox root and turn the approval gate off, so they are refused while the human UI is reachable from off the machine with no token — enforced, not warned about. And the sandbox root never moves by agent request: there is deliberately no tool for it, only the human's hand on the web UI.
+17. **Approval is one setting for every tool, upstreams included.** `--approve` still parses but means `approval.mode: "always"` — every call, `read` included, waits for a yes/no. A proxied upstream tool can be as much of a shell as `bash` is, so a per-tool list is a list that goes stale the moment a new tool is attached.
 
 ## Open questions
 

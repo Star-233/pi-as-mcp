@@ -6,6 +6,8 @@ import {
   GetPromptRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { Config } from "./config.ts";
+import type { ApprovalMode } from "./config-file.ts";
+import type { McpAggregator } from "./attach-mcp.ts";
 import type { HumanChannel } from "./human/channel.ts";
 import type { AdaptedTool, ContentPart } from "./pi-tools.ts";
 import { buildAgentPrompt } from "./prompt.ts";
@@ -170,8 +172,38 @@ async function withKeepAlive<T>(extra: any, fn: () => Promise<T>): Promise<T> {
   }
 }
 
-export function createMcpServer(cfg: Config, piTools: AdaptedTool[], channel: HumanChannel): Server {
-  const instructions = buildAgentPrompt(cfg, piTools);
+export type RuntimeState = {
+  human: boolean;
+  approvalMode: ApprovalMode;
+};
+
+/**
+ * The mutable half of the configuration: everything the config file (or the web
+ * UI) can change while the bridge is up. The Server in HTTP mode is built fresh
+ * for every request anyway, but stdio keeps one instance alive, so every
+ * handler reads these fields at call time rather than capturing them once.
+ */
+export function createMcpServer(
+  cfg: Config,
+  piTools: AdaptedTool[],
+  channel: HumanChannel,
+  extras: {
+    state: RuntimeState;
+    /** The sandbox is the source of truth for the current root. */
+    sandbox: { root: string };
+    aggregator: McpAggregator | null;
+  },
+): Server {
+  // The prompt has to describe the bridge as it is *now* - the root moves at
+  // runtime - so it is built through a view rather than captured once.
+  const view = (): Config => ({
+    ...cfg,
+    root: extras.sandbox.root,
+    human: extras.state.human,
+    approvalMode: extras.state.approvalMode,
+  });
+  const buildInstructions = () => buildAgentPrompt(view(), piTools);
+  const instructions = buildInstructions();
   const server = new Server(
     { name: cfg.serverName, version: "0.1.0" },
     { capabilities: { tools: {}, prompts: {} }, instructions },
@@ -179,12 +211,18 @@ export function createMcpServer(cfg: Config, piTools: AdaptedTool[], channel: Hu
 
   const byName: Record<string, AdaptedTool> = {};
   for (const t of piTools) byName[t.name] = t;
-  const humans = cfg.human ? humanToolDefs() : [];
+  const humans = () => (extras.state.human ? humanToolDefs() : []);
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
       ...piTools.map((t) => toolSchema(t.name, t.description, t.inputSchema)),
-      ...humans,
+      ...humans(),
+      // Upstream MCP tools, prefixed with their upstream's name. Listed fresh on
+      // every request, so a connect/disconnect in the UI is visible without a
+      // tools/list_changed notification the stateless transport cannot deliver.
+      ...(extras.aggregator?.tools() ?? []).map((t) =>
+        toolSchema(t.name, t.description, t.inputSchema),
+      ),
       toolSchema(
         INSTRUCTIONS_TOOL,
         "Return the operating instructions for this bridge verbatim. Call once at the start of a session if your client did not already show them to you.",
@@ -209,7 +247,7 @@ export function createMcpServer(cfg: Config, piTools: AdaptedTool[], channel: Hu
     }
     return {
       description: "Operating instructions for the pi-as-mcp bridge.",
-      messages: [{ role: "user", content: { type: "text", text: instructions } }],
+      messages: [{ role: "user", content: { type: "text", text: buildInstructions() } }],
     };
   });
 
@@ -218,13 +256,13 @@ export function createMcpServer(cfg: Config, piTools: AdaptedTool[], channel: Hu
     const args = (req.params.arguments ?? {}) as Record<string, any>;
     const signal: AbortSignal | undefined = extra?.signal;
 
-    if (name === INSTRUCTIONS_TOOL) return { content: text(instructions) };
+    if (name === INSTRUCTIONS_TOOL) return { content: text(buildInstructions()) };
 
     if (name === "human_say" || name === "human_ask" || name === "human_wait") {
-      if (!cfg.human) {
+      if (!extras.state.human) {
         return {
           content: text(
-            `Unknown tool: ${name}. The human channel is off: this bridge was started without --human.`,
+            `Unknown tool: ${name}. The human channel is off (start with --human, or turn it on in the web UI or the config file).`,
           ),
           isError: true,
         };
@@ -251,22 +289,29 @@ export function createMcpServer(cfg: Config, piTools: AdaptedTool[], channel: Hu
       return humanResult(res, "human_wait");
     }
 
+    const proxied = extras.aggregator?.has(name) === true;
     const tool = byName[name];
-    if (!tool) {
+    if (!tool && !proxied) {
       return { content: text(`Unknown tool: ${name}`), isError: true };
     }
 
     const summary = describeCall(name, args);
 
-    // Optional human approval gate for the dangerous verbs. Fails closed.
-    // Without --human there is nobody to ask, so the gate cannot fail closed:
-    // refuse at startup rather than silently auto-approving everything.
-    if (cfg.approve.includes(name)) {
-      if (!cfg.human) {
+    // The approval gate, one setting for everything: "always" holds every tool
+    // call - Pi's own and the proxied upstreams alike, because a proxied tool
+    // can be as much of a shell as bash is. Fails closed: without the human
+    // channel there is nobody to ask. That combination is refused at startup,
+    // but the channel can be toggled while the bridge runs, so guard here too.
+    if (
+      extras.state.approvalMode === "always" &&
+      name !== INSTRUCTIONS_TOOL &&
+      !name.startsWith("human_")
+    ) {
+      if (!extras.state.human) {
         return {
           content: text(
-            `${name} requires --approve, but the human channel is off (no --human), so there is ` +
-              "nobody to approve it. Restart with --human to use the approval gate.",
+            `Approval mode is "always" but the human channel is off, so there is nobody to approve ` +
+              `this ${name} call. It does not run. Turn the channel back on in the web UI or the config file.`,
           ),
           isError: true,
         };
@@ -284,6 +329,19 @@ export function createMcpServer(cfg: Config, piTools: AdaptedTool[], channel: Hu
           isError: true,
         };
       }
+    }
+
+    // A proxied tool: forward it as-is. The sandbox does not apply - upstream
+    // tools take no filesystem paths here - but the approval gate above and the
+    // timeline below treat it exactly like a local one.
+    if (proxied && extras.aggregator) {
+      const callId = cfg.humanUI ? channel.toolStart(name, summary) : null;
+      const started = Date.now();
+      const result = await extras.aggregator.call(name, args, signal);
+      if (callId) {
+        channel.toolEnd(callId, !result.isError, Date.now() - started, preview(result.content));
+      }
+      return { content: result.content, isError: result.isError };
     }
 
     // The human sees every call this bridge runs on their machine, not just the

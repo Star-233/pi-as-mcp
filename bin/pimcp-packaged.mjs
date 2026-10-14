@@ -73,7 +73,8 @@ Passed through to the bridge:
                        invalidate credentials already pasted into a client.
   --issuer <url>       The URL clients reach, e.g. https://mcp.example.com. Only
                        with --oauth. Defaults to the quick-tunnel hostname.
-  --approve <tools>    Require human approval before these tools run, e.g. bash.
+  --approve           Approval mode "always": every tool call waits for a yes/no in the
+                       human UI. A value after the flag is accepted but ignored.
                        Needs --human.
   --tools <list>       Expose only this comma-separated subset.
   --deny <paths>       Extra paths to refuse even inside the root.

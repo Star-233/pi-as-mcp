@@ -11,7 +11,8 @@ fs.writeFileSync(path.join(root, "sub", "nested.txt"), "nested\n");
 const child = spawn(
   process.execPath,
   ["src/index.ts", "--root", root, "--ui-port", "8791", "--human"],
-  { stdio: ["pipe", "pipe", "pipe"] },
+  { stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, PI_AS_MCP_CONFIG: path.resolve(".tmp-probe-config", "none.json") } },
 );
 
 let buf = "";

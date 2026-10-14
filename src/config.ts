@@ -1,4 +1,11 @@
 import path from "node:path";
+import {
+  configFilePath,
+  readFileConfig,
+  type ApprovalMode,
+  type BridgeConfigFile,
+  type McpUpstream,
+} from "./config-file.ts";
 
 export const PROJECT = "pi-as-mcp";
 
@@ -44,6 +51,18 @@ export type Config = {
   oauthClientId: string;
   oauthClientSecret: string;
   serverName: string;
+  /**
+   * The one approval question, for every tool alike: "always" holds each call
+   * for a yes/no from the human (and needs the human channel), "never" lets
+   * every call run. The per-tool --approve list is gone in spirit: the flag is
+   * still accepted, but only as a way to say "always".
+   */
+  approvalMode: ApprovalMode;
+  /** Upstream MCP servers from the config file, by name. Hot-managed at runtime. */
+  mcps: Record<string, McpUpstream>;
+  configPath: string;
+  /** Set when ~/.pimcp/config.json exists but could not be parsed - the file was ignored. */
+  configFileError?: string;
 };
 
 const DEFAULT_TOOLS =
@@ -91,10 +110,19 @@ function str(v: string | boolean | undefined, fallback: string): string {
 
 const truthy = (v: string | undefined): boolean => v === "1" || v === "true";
 
-/** Resolve configuration from CLI flags, then environment, then defaults. */
+/**
+ * Resolve configuration: an explicit CLI flag first, then the config file
+ * (~/.pimcp/config.json), then the environment, then defaults. The file sits
+ * above the environment because it is what the human edits on purpose; flags
+ * sit above everything because a one-off command must be able to try something
+ * without rewriting the file first.
+ */
 export function loadConfig(argv: string[]): Config {
   const f = parseFlags(argv);
   const env = process.env;
+  const fileRead = readFileConfig();
+  const file: BridgeConfigFile = fileRead.config;
+  const configFileError: string | undefined = fileRead.error;
 
   const root = path.resolve(
     str(f.root, env.PI_AS_MCP_ROOT ?? process.cwd()),
@@ -104,7 +132,12 @@ export function loadConfig(argv: string[]): Config {
   const deny = list(str(f.deny, env.PI_AS_MCP_DENY ?? "") || undefined, DEFAULT_DENY);
 
   const http = f.http === true || truthy(env.PI_AS_MCP_HTTP);
-  const human = f.human === true || truthy(env.PI_AS_MCP_HUMAN);
+  // --human / --no-human are explicit; otherwise the file; otherwise the env.
+  const human =
+    f.human === true ? true
+    : f["no-human"] === true ? false
+    : file.human !== undefined ? file.human
+    : truthy(env.PI_AS_MCP_HUMAN);
   const oauth = f.oauth === true || truthy(env.PI_AS_MCP_OAUTH);
   const httpHost = str(f.host, env.PI_AS_MCP_HOST ?? "127.0.0.1");
   const httpPort = num(str(f.port, env.PI_AS_MCP_PORT ?? ""), DEFAULT_PORT);
@@ -133,5 +166,13 @@ export function loadConfig(argv: string[]): Config {
     oauthClientId: str(f["oauth-client-id"], env.PI_AS_MCP_OAUTH_CLIENT_ID ?? ""),
     oauthClientSecret: str(f["oauth-client-secret"], env.PI_AS_MCP_OAUTH_CLIENT_SECRET ?? ""),
     serverName: PROJECT,
+    approvalMode: f.approve !== undefined
+      ? "always"
+      : file.approval?.mode === "always" || file.approval?.mode === "never"
+        ? file.approval.mode
+        : "never",
+    mcps: file.mcps ?? {},
+    configPath: configFilePath(),
+    configFileError,
   };
 }

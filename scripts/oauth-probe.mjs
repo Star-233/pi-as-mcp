@@ -37,7 +37,8 @@ const REDIRECT = "http://127.0.0.1:9999/callback";
 const child = spawn(process.execPath,
   ["src/index.ts", "--root", root, "--http", "--port", String(PORT), "--token", TOKEN,
    "--human", "--oauth", "--ui-port", String(UI)],
-  { stdio: ["ignore", "pipe", "pipe"] });
+  { stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, PI_AS_MCP_CONFIG: path.resolve(".tmp-probe-config", "none.json") } });
 const logs = [];
 child.stderr.on("data", (d) => logs.push(d.toString()));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -384,7 +385,8 @@ const hosted = spawn(process.execPath,
   ["src/index.ts", "--root", root, "--http", "--port", String(PORT2), "--ui-port", String(UI2),
    "--oauth", "--oauth-redirect", HOSTED_REDIRECT,
    "--oauth-client-id", CLIENT_ID, "--oauth-client-secret", CLIENT_SECRET],
-  { stdio: ["ignore", "pipe", "pipe"] });
+  { stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, PI_AS_MCP_CONFIG: path.resolve(".tmp-probe-config", "none.json") } });
 const hostedLogs = [];
 hosted.stderr.on("data", (d) => hostedLogs.push(d.toString()));
 
@@ -530,7 +532,8 @@ const LATER_REDIRECT = "https://client.example.com/oauth/other";
 const plainSpawn = spawn(process.execPath,
   ["src/index.ts", "--root", root, "--http", "--port", String(PORT3), "--ui-port", String(UI3),
    "--oauth", "--oauth-client-id", DEFAULT_ID, "--oauth-client-secret", DEFAULT_SECRET],
-  { stdio: ["ignore", "pipe", "pipe"] });
+  { stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, PI_AS_MCP_CONFIG: path.resolve(".tmp-probe-config", "none.json") } });
 const plainLogs = [];
 plainSpawn.stderr.on("data", (d) => plainLogs.push(d.toString()));
 
