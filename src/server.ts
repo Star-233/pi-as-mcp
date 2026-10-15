@@ -193,7 +193,7 @@ export function createMcpServer(
   const buildInstructions = () => buildAgentPrompt(view(), piTools, contextNow(), skillsNow());
   const instructions = buildInstructions();
   const server = new Server(
-    { name: cfg.serverName, version: "0.1.0" },
+    { name: cfg.serverName, version: "0.2.0" },
     { capabilities: { tools: {}, prompts: {} }, instructions },
   );
 

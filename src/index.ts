@@ -202,7 +202,7 @@ const controls = {
 
 const bridgeInfo = () => ({
   serverName: cfg.serverName,
-  version: "0.1.0",
+  version: "0.2.0",
   root: sandbox.root,
   tools: pi.tools.map((t) => t.name),
   approve: state.approvalMode === "always" ? ["*"] : [],

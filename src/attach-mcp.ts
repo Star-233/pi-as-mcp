@@ -141,7 +141,7 @@ export class McpAggregator {
         throw new Error("an http upstream needs a url");
       }
 
-      const client = new Client({ name: `pi-as-mcp-${clean}`, version: "0.1.0" }, {});
+      const client = new Client({ name: `pi-as-mcp-${clean}`, version: "0.2.0" }, {});
       const transport =
         config.type === "stdio"
           ? new StdioClientTransport({
