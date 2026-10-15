@@ -394,8 +394,8 @@ try {
   await waitForPort(hosted, PORT2, hostedLogs);
 
   console.log("\n--- a client configured by hand: no PKCE, no registration ---");
-  check("--oauth works without --human", hostedLogs.join("").includes("approval UI:"),
-    hostedLogs.join("").split("\n").find((l) => l.includes("human channel"))?.trim() ?? "");
+  check("--oauth works without --human", hostedLogs.join("").includes("web UI:"),
+    hostedLogs.join("").split("\n").find((l) => l.includes("web UI"))?.trim() ?? "");
 
   const hostedInfo = await fetch(`${UI2_BASE}/info`).then((r) => r.json());
   check("the page is up and says it is standing in for approvals only",

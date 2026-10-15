@@ -186,7 +186,7 @@ const PORT = 18794;
 const TOKEN = "shell-guard-probe-token";
 
 const logs = [];
-const child = spawn(process.execPath, ["src/index.ts", "--root", work, "--http", "--port", String(PORT), "--token", TOKEN], {
+const child = spawn(process.execPath, ["src/index.ts", "--root", work, "--http", "--port", String(PORT), "--token", TOKEN, "--ui-port", "8796"], {
   cwd: repo,
   env: { ...process.env, HOME: home, USERPROFILE: home },
   stdio: ["ignore", "pipe", "pipe"],

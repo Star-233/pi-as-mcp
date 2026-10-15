@@ -4,6 +4,7 @@ import path from "node:path";
 import type { HumanChannel, ChannelEvent } from "./channel.ts";
 import type { OAuthProvider } from "../oauth.ts";
 import type { McpUpstream } from "../config-file.ts";
+import type { ApprovalEvent, ApprovalGate } from "../approval.ts";
 
 /**
  * The controls the web UI can exercise over the running bridge: move the sandbox
@@ -39,9 +40,13 @@ export type WebUIOptions = {
    */
   readonly oauth?: Pick<OAuthProvider, "pending" | "decide" | "subscribe"> | null;
   /**
-   * Runtime controls for the sidebar. Omitted when the UI runs without the
-   * human channel or an OAuth flow needing it... in practice always passed; the
-   * type stays optional so the probes can boot a UI without any.
+   * Held tool calls waiting for Allow or Deny. Always passed: the page is where
+   * those answers are given, whether or not the human channel is on.
+   */
+  readonly approvals: Pick<ApprovalGate, "pending" | "decide" | "subscribe">;
+  /**
+   * Runtime controls for the sidebar. Optional only so the probes can boot a bare
+   * UI; the bridge always passes them.
    */
   controls?: WebUIControls;
 };
@@ -127,6 +132,37 @@ export function startWebUI(channel: HumanChannel, opts: WebUIOptions) {
       });
       req.on("error", () => resolve(null));
     });
+
+  /**
+   * Read {id, allow} and hand it to one decide(): 200 when it was still waiting, 409
+   * when it was already answered, had expired, or never existed - the card was real
+   * and is now stale, which is what the page should say. A malformed body denies.
+   */
+  const decideFromBody = (
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    decide: (id: string, allow: boolean) => boolean,
+  ): void => {
+    let body = "";
+    req.on("data", (c) => {
+      body += c;
+      if (body.length > 1_000_000) req.destroy();
+    });
+    req.on("end", () => {
+      let id = "";
+      let allow = false;
+      try {
+        const parsed = JSON.parse(body || "{}");
+        id = typeof parsed.id === "string" ? parsed.id : "";
+        allow = parsed.allow === true;
+      } catch {
+        /* ignore malformed bodies, and deny below */
+      }
+      const decided = id !== "" && decide(id, allow);
+      res.writeHead(decided ? 200 : 409, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: decided, allow }));
+    });
+  };
 
   /** POST /ctl/<name>: one shape for every control - {ok:true} or {ok:false, error}. */
   const control = async (
@@ -261,11 +297,15 @@ export function startWebUI(channel: HumanChannel, opts: WebUIOptions) {
       const unsubscribeAuth = opts.oauth
         ? opts.oauth.subscribe((e) => send(e))
         : () => {};
+      // Held tool calls travel on their own event, for the same reason.
+      send({ type: "approvals", pending: opts.approvals.pending() });
+      const unsubscribeApprovals = opts.approvals.subscribe((e: ApprovalEvent) => send(e));
       const beat = setInterval(() => res.write(": ping\n\n"), 15000);
       req.on("close", () => {
         clearInterval(beat);
         unsubscribe();
         unsubscribeAuth();
+        unsubscribeApprovals();
       });
       return;
     }
@@ -281,27 +321,16 @@ export function startWebUI(channel: HumanChannel, opts: WebUIOptions) {
         res.end(JSON.stringify({ ok: false, error: "no authorization server is running" }));
         return;
       }
-      let body = "";
-      req.on("data", (c) => {
-        body += c;
-        if (body.length > 1_000_000) req.destroy();
-      });
-      req.on("end", () => {
-        let id = "";
-        let allow = false;
-        try {
-          const parsed = JSON.parse(body || "{}");
-          id = typeof parsed.id === "string" ? parsed.id : "";
-          allow = parsed.allow === true;
-        } catch {
-          /* ignore malformed bodies, and deny below */
-        }
-        const decided = id !== "" && opts.oauth!.decide(id, allow);
-        // 409 rather than 404 when the request is gone: the card was real and is
-        // now stale, which is what the page should say.
-        res.writeHead(decided ? 200 : 409, { "content-type": "application/json" });
-        res.end(JSON.stringify({ ok: decided, allow }));
-      });
+      decideFromBody(req, res, (id, allow) => opts.oauth!.decide(id, allow));
+      return;
+    }
+
+    /**
+     * Answer a held tool call. The same shape as an authorization decision, and for
+     * the same reason it is only answered here: the card is on this page.
+     */
+    if (req.method === "POST" && url.pathname === "/approval/decision") {
+      decideFromBody(req, res, (id, allow) => opts.approvals.decide(id, allow));
       return;
     }
 

@@ -9,6 +9,7 @@ import type { Config } from "./config.ts";
 import type { ApprovalMode } from "./config-file.ts";
 import type { McpAggregator } from "./attach-mcp.ts";
 import type { HumanChannel } from "./human/channel.ts";
+import type { ApprovalGate } from "./approval.ts";
 import type { AdaptedTool, ContentPart } from "./pi-tools.ts";
 import { buildAgentPrompt } from "./prompt.ts";
 import { describeCall } from "./sandbox.ts";
@@ -116,32 +117,6 @@ function humanResult(res: { status: string }, again: string): { content: Content
   };
 }
 
-const APPROVAL_YES = /^(y|yes|ok|okay|批准|可以|同意|好)/i;
-const QUEUE_PREFIX = /^\[\d+\/\d+ · \d{2}:\d{2}:\d{2}\]\s*/;
-
-/**
- * Decide an approval from a human answer that may be several queued messages
- * merged into one string (see `delivery` in channel.ts).
- *
- * Every line has to be an approval. A retraction anywhere denies, and so does
- * anything unrecognised - the gate fails closed. Judging only the first line
- * would be worse than useless here: "yes" followed by "wait, no" would run the
- * command, which is exactly the case a retraction exists to prevent.
- *
- * Note that the merged form cannot be matched by the old one-shot regex: it
- * starts with "[1/2 · ", so the ^ anchor never fires and every multi-message
- * answer would deny. Stripping the prefixes is what makes merging compatible
- * with this gate at all.
- */
-function approves(verdict: { status: string; text?: string }): boolean {
-  if (verdict.status !== "human_message" || typeof verdict.text !== "string") return false;
-  const lines = verdict.text
-    .split("\n")
-    .map((l) => l.replace(QUEUE_PREFIX, "").trim())
-    .filter(Boolean);
-  return lines.length > 0 && lines.every((l) => APPROVAL_YES.test(l));
-}
-
 function clampBlock(requested: unknown, cap: number): number {
   const n = typeof requested === "number" && Number.isFinite(requested) ? requested : cap;
   return Math.max(1000, Math.min(n, cap));
@@ -198,6 +173,8 @@ export function createMcpServer(
     aggregator: McpAggregator | null;
     /** Remembers what the agent was last shown, so a change is announced once. */
     tracker: ToolChangeTracker;
+    /** Where a held tool call waits for Allow or Deny on the web page. */
+    approvals: ApprovalGate;
   },
 ): Server {
   // The prompt has to describe the bridge as it is *now* - the root moves at
@@ -335,8 +312,8 @@ export function createMcpServer(
         `Blocked by the shell guard [${shellRefusal.rule}]: ${shellRefusal.reason}. ` +
         "This refusal applies in every approval mode. Reach the goal with a narrower, reversible command, or " +
         (extras.state.human ? "ask the human with human_ask." : "say so in your answer.");
-      const callId = cfg.humanUI ? channel.toolStart(name, describeCall(name, args)) : null;
-      if (callId) channel.toolEnd(callId, false, 0, message);
+      const callId = channel.toolStart(name, describeCall(name, args));
+      channel.toolEnd(callId, false, 0, message);
       return { content: text(message), isError: true };
     }
 
@@ -344,30 +321,17 @@ export function createMcpServer(
 
     // The approval gate, one setting for everything: "always" holds every tool
     // call - Pi's own and the proxied upstreams alike, because a proxied tool
-    // can be as much of a shell as bash is. Fails closed: without the human
-    // channel there is nobody to ask. That combination is refused at startup,
-    // but the channel can be toggled while the bridge runs, so guard here too.
+    // can be as much of a shell as bash is. The hold is a card on the web page,
+    // so it needs no human channel; with nobody at the page the call waits out
+    // the window and is refused (fails closed).
     if (
       extras.state.approvalMode === "always" &&
       name !== INSTRUCTIONS_TOOL &&
       !name.startsWith("human_")
     ) {
-      if (!extras.state.human) {
-        return {
-          content: text(
-            `Approval mode is "always" but the human channel is off, so there is nobody to approve ` +
-              `this ${name} call. It does not run. Turn the channel back on in the web UI or the config file.`,
-          ),
-          isError: true,
-        };
-      }
-      const verdict = await withKeepAlive(extra, () =>
-        channel.ask(
-          `Approve this ${name} call?\n\n${summary}\n\nReply "yes" to allow, anything else to deny.`,
-          cfg.blockMs,
-        ),
+      const approved = await withKeepAlive(extra, () =>
+        extras.approvals.request(name, summary, 'approval mode is "always"', cfg.blockMs),
       );
-      const approved = approves(verdict);
       if (!approved) {
         return {
           content: text(`Denied: the human did not approve this ${name} call.`),
@@ -380,30 +344,25 @@ export function createMcpServer(
     // tools take no filesystem paths here - but the approval gate above and the
     // timeline below treat it exactly like a local one.
     if (proxied && extras.aggregator) {
-      const callId = cfg.humanUI ? channel.toolStart(name, summary) : null;
+      const callId = channel.toolStart(name, summary);
       const started = Date.now();
       const result = await extras.aggregator.call(name, args, signal);
-      if (callId) {
-        channel.toolEnd(callId, !result.isError, Date.now() - started, preview(result.content));
-      }
+      channel.toolEnd(callId, !result.isError, Date.now() - started, preview(result.content));
       return { content: result.content, isError: result.isError };
     }
 
     // The human sees every call this bridge runs on their machine, not just the
     // ones that speak through human_say. A tool call that errors still records.
-    // Gated on whether the page is up rather than on the human channel: with
-    // --oauth and no --human that page is an approval console, and what the client
-    // is doing to this machine is exactly what belongs on it.
-    const callId = cfg.humanUI ? channel.toolStart(name, summary) : null;
+    const callId = channel.toolStart(name, summary);
     const started = Date.now();
 
     try {
       const result = await tool.call(args, signal);
-      if (callId) channel.toolEnd(callId, !result.isError, Date.now() - started, preview(result.content));
+      channel.toolEnd(callId, !result.isError, Date.now() - started, preview(result.content));
       return { content: result.content, isError: result.isError };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      if (callId) channel.toolEnd(callId, false, Date.now() - started, message);
+      channel.toolEnd(callId, false, Date.now() - started, message);
       return {
         content: text(message),
         isError: true,

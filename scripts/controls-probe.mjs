@@ -168,6 +168,40 @@ async function uiPost(action, body) {
 const say = (text) => fetch(`http://127.0.0.1:${UI}/say?token=${TOKEN}`, {
   method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }),
 });
+// The page's held calls, from the same stream a browser reads.
+let heldNow = [];
+(async () => {
+  const res = await fetch(`http://127.0.0.1:${UI}/events?token=${TOKEN}`);
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let i;
+    while ((i = buf.indexOf("\n\n")) >= 0) {
+      const chunk = buf.slice(0, i);
+      buf = buf.slice(i + 2);
+      for (const line of chunk.split("\n")) {
+        if (!line.startsWith("data:")) continue;
+        const msg = JSON.parse(line.slice(5));
+        if (msg.type === "approvals") heldNow = msg.pending;
+      }
+    }
+  }
+})().catch(() => {});
+/** Answer the first held call the way a click on its card does. Returns the HTTP status. */
+async function clickHeld(allow) {
+  const deadline = Date.now() + 5000;
+  while (!heldNow.length && Date.now() < deadline) await sleep(50);
+  const card = heldNow[0];
+  if (!card) return 0;
+  const res = await fetch(`http://127.0.0.1:${UI}/approval/decision?token=${TOKEN}`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: card.id, allow }),
+  });
+  return res.status;
+}
 async function toolNames() {
   const list = await mcp("tools/list", {});
   return (list.msg?.result?.tools ?? []).map((t) => t.name);
@@ -200,24 +234,21 @@ try {
   const badRoot = await uiPost("root", { path: path.join(tmp, "nope") });
   check("a missing directory is refused, not fatal", badRoot.status === 400 && badRoot.body?.ok === false, JSON.stringify(badRoot.body));
 
-  // Approval mode: never -> always, and the impossible combination refused.
+  // Approval and the chat are independent: the channel can be off while approval is
+  // always, and a held call waits for Allow on the page, not for a word in the chat.
   const humanOff = await uiPost("human", { enabled: false });
   check("the channel can be turned off while approval is never", humanOff.status === 200, JSON.stringify(humanOff.body));
-  const alwaysRefused = await uiPost("approval", { mode: "always" });
-  check("approval always without the channel is refused", alwaysRefused.status === 400, JSON.stringify(alwaysRefused.body));
-  await uiPost("human", { enabled: true });
   const always = await uiPost("approval", { mode: "always" });
-  check("approval always with the channel is accepted", always.status === 200, JSON.stringify(always.body));
+  check("approval always is accepted with the channel off", always.status === 200, JSON.stringify(always.body));
   const gated = mcp("tools/call", { name: "bash", arguments: { command: "echo gated-ok" } });
-  await sleep(700);
-  await say("yes");
+  const clicked = await clickHeld(true);
   const gatedDone = await gated;
-  check("a gated call runs once approved", firstText(gatedDone).includes("gated-ok"), JSON.stringify(firstText(gatedDone)));
-  const humanOffRefused = await uiPost("human", { enabled: false });
-  check("the channel cannot be turned off while approval is always", humanOffRefused.status === 400, JSON.stringify(humanOffRefused.body));
+  check("a held call runs once Allow is clicked on the page", clicked === 200 && firstText(gatedDone).includes("gated-ok"), `HTTP ${clicked} ${JSON.stringify(firstText(gatedDone))}`);
+  const humanOffWhileAlways = await uiPost("human", { enabled: false });
+  check("the channel can be turned off while approval is always", humanOffWhileAlways.status === 200, JSON.stringify(humanOffWhileAlways.body));
   await uiPost("approval", { mode: "never" });
   const humanOff2 = await uiPost("human", { enabled: false });
-  check("the channel turns off once approval is back to never", humanOff2.status === 200, JSON.stringify(humanOff2.body));
+  check("the channel stays off once approval is back to never", humanOff2.status === 200, JSON.stringify(humanOff2.body));
 
   // Upstream toggle from the UI.
   await uiPost("mcp-disconnect", { name: "mini" });

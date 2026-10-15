@@ -33,10 +33,6 @@ const checks = [
   ["issuer", c.issuer, ""],
   ["oauthRedirects.length", c.oauthRedirects.length, 0],
   ["serverName", c.serverName, "pi-as-mcp"],
-  // The web UI is not the human channel: it is the page where an authorization is
-  // approved, so --oauth starts it too. Conflating the two is what made a hosted
-  // client impossible to add, which is the bug this field exists to prevent.
-  ["humanUI without either flag", c.humanUI, false],
 ];
 let bad = 0;
 for (const [k, got, want] of checks) {
@@ -64,17 +60,17 @@ console.log(
     : "FAIL  oauth flags " + JSON.stringify(c3),
 );
 
-// --oauth alone has to be a complete configuration now: the UI comes with it and
-// the human channel stays off. That is the hosted-client case - a client added by
+// --oauth alone has to be a complete configuration: the human channel stays off.
+// That is the hosted-client case - a client added by
 // pasting a client id and secret into it, where there is no conversation to have.
 const hosted = loadConfig(["--oauth", "--http",
   "--oauth-redirect", "https://oauth-redirect.example.com/r/x,https://other.example.com/cb",
   "--oauth-client-id", "id-1", "--oauth-client-secret", "secret-1"]);
 console.log(
-  hosted.oauth === true && hosted.human === false && hosted.humanUI === true &&
+  hosted.oauth === true && hosted.human === false &&
     hosted.oauthRedirects.length === 2 && hosted.oauthClientId === "id-1" &&
     hosted.oauthClientSecret === "secret-1"
-    ? "ok    --oauth alone brings the UI, not the human channel"
+    ? "ok    --oauth alone leaves the human channel off"
     : "FAIL  hosted client config " + JSON.stringify(hosted),
 );
 

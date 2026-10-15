@@ -99,6 +99,7 @@
   .auth .deny { background:transparent; border:1px solid var(--line2); color:var(--dim); }
   .auth .deny:hover { color:var(--fg); }
   .auth button:disabled { opacity:.5; cursor:default; }
+  .auth .cmd { margin-top:4px; padding:6px 8px; border:1px solid var(--line); border-radius:6px; background:#0f131a; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12px; white-space:pre-wrap; word-break:break-all; max-height:9em; overflow:auto; }
 
   /* One bubble, one look. A message's kind is deliberately not rendered: a chat
      has no message types, and "the agent is waiting for you" is already carried by
@@ -544,39 +545,88 @@ function authCard(p) {
   allow.type = 'button'; allow.className = 'allow'; allow.textContent = 'Allow';
   var deny = document.createElement('button');
   deny.type = 'button'; deny.className = 'deny'; deny.textContent = 'Deny';
-  allow.onclick = function () { decideAuth(p.id, true, allow, deny); };
-  deny.onclick = function () { decideAuth(p.id, false, allow, deny); };
+  allow.onclick = function () { decideCard('/oauth/decision', p.id, true, allow, deny); };
+  deny.onclick = function () { decideCard('/oauth/decision', p.id, false, allow, deny); };
   btns.appendChild(allow); btns.appendChild(deny);
 
   wrap.appendChild(body); wrap.appendChild(btns);
   return wrap;
 }
 
-function renderAuths() {
+/* A held tool call. The summary is the command or the write itself, shown whole and in
+ * monospace: the human is deciding on exactly this text. */
+var pendingTools = [];
+
+function toolCard(p) {
+  var wrap = document.createElement('div');
+  wrap.className = 'auth';
+  var body = document.createElement('div');
+  body.className = 'body';
+  var who = document.createElement('div');
+  who.className = 'who';
+  who.textContent = p.tool;
+  var ask = document.createElement('span');
+  ask.className = 'ask';
+  ask.textContent = ' wants to run';
+  who.appendChild(ask);
+  var cmd = document.createElement('div');
+  cmd.className = 'cmd';
+  cmd.textContent = p.summary;
+  var why = document.createElement('div');
+  why.className = 'what';
+  why.textContent = p.reason;
+  body.appendChild(who); body.appendChild(cmd); body.appendChild(why);
+
+  var btns = document.createElement('div');
+  btns.className = 'btns';
+  var allow = document.createElement('button');
+  allow.type = 'button'; allow.className = 'allow'; allow.textContent = 'Allow';
+  var deny = document.createElement('button');
+  deny.type = 'button'; deny.className = 'deny'; deny.textContent = 'Deny';
+  allow.onclick = function () { decideCard('/approval/decision', p.id, true, allow, deny); };
+  deny.onclick = function () { decideCard('/approval/decision', p.id, false, allow, deny); };
+  btns.appendChild(allow); btns.appendChild(deny);
+
+  wrap.appendChild(body); wrap.appendChild(btns);
+  return wrap;
+}
+
+function renderApprovals() {
   approvalsEl.textContent = '';
-  if (!pendingAuths.length) { approvalsEl.classList.add('hidden'); return; }
+  if (!pendingAuths.length && !pendingTools.length) { approvalsEl.classList.add('hidden'); return; }
   approvalsEl.classList.remove('hidden');
   for (var i = 0; i < pendingAuths.length; i++) approvalsEl.appendChild(authCard(pendingAuths[i]));
+  for (var j = 0; j < pendingTools.length; j++) approvalsEl.appendChild(toolCard(pendingTools[j]));
 }
 
 function setAuths(list, announce) {
   var before = pendingAuths.length;
   pendingAuths = list || [];
-  renderAuths();
+  renderApprovals();
   if (announce && pendingAuths.length > before) {
     notify('question', 'A client is asking for access: ' + pendingAuths[pendingAuths.length - 1].clientName);
   }
 }
 
-function decideAuth(id, allow, allowBtn, denyBtn) {
+function setTools(list, announce) {
+  var before = pendingTools.length;
+  pendingTools = list || [];
+  renderApprovals();
+  if (announce && pendingTools.length > before) {
+    notify('question', 'A tool call is waiting for approval: ' + pendingTools[pendingTools.length - 1].tool);
+  }
+}
+
+/* One answer for either kind of card. 409 means the request was answered, expired or
+ * withdrawn while the card was on screen; the card is stale either way, and the next
+ * event drops it. */
+function decideCard(path, id, allow, allowBtn, denyBtn) {
   allowBtn.disabled = true; denyBtn.disabled = true;
-  fetch('/oauth/decision?token=' + encodeURIComponent(token), {
+  fetch(path + '?token=' + encodeURIComponent(token), {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ id: id, allow: allow })
   }).then(function (r) {
-    // 409 means the request expired while the card was on screen. The card is stale
-    // either way, and the next authorizations event will drop it.
     if (!r.ok) { allowBtn.disabled = false; denyBtn.disabled = false; }
     loadInfo();
   }).catch(function () { allowBtn.disabled = false; denyBtn.disabled = false; });
@@ -623,6 +673,8 @@ function connect() {
       setStatus(msg.waiting, false);
     } else if (msg.type === 'authorizations') {
       setAuths(msg.pending, true);
+    } else if (msg.type === 'approvals') {
+      setTools(msg.pending, true);
     }
   };
   es.onerror = function () {
@@ -682,7 +734,7 @@ function updateSide() {
   var approvalAlways = info.approvalMode === 'always' ||
     (info.approvalMode === undefined && info.approve && info.approve.length);
   h += '<h3>human approval</h3>' + (approvalAlways
-    ? '<div class="note">every call blocks on a yes/no in the log</div>'
+    ? '<div class="note">every call waits for Allow or Deny on this page</div>'
     : '<div class="note">none — every call runs immediately</div>');
   h += '<h3>denied paths</h3>' + chips(info.deny);
   h += '<h3>limits</h3>';
@@ -702,15 +754,10 @@ function updateSide() {
   } else {
     h += kv('oauth', '<span class="chip">off</span>');
   }
-  if (!listening) h += '<h3>this page</h3><div class="note">The bridge was started without ' +
-    '<code>--human</code>, so the agent has no human_say/ask/wait tools and nothing typed here ' +
-    'would reach anyone. This page is up for one job: approving a client that asks for access.</div>';
+  if (!listening) h += '<h3>chat</h3><div class="note">The human channel is off, so the agent has no ' +
+    'human_say/ask/wait tools and nothing typed here would reach anyone. Approvals still appear on this page.</div>';
   if (noToken) h += '<div class="warnbox">The MCP port is serving a shell with <b>no token</b>. ' +
     'Anyone who can reach it can run commands here. Restart with <code>--token</code>.</div>';
-  if (oauthOn && info.oauth.uiExposed) h += '<div class="warnbox">The human UI is reachable from ' +
-    'off this machine and has <b>no token</b>, and the UI is where authorizations are approved. ' +
-    'Anyone who can reach it can authorize themselves. Bind it to loopback or set ' +
-    '<code>--ui-token</code>.</div>';
   side.innerHTML = h;
   renderControls();
 }
@@ -819,7 +866,7 @@ function renderControls() {
   var ap = ctlKv('approval');
   var apBtns = document.createElement('div');
   apBtns.className = 'chips';
-  apBtns.appendChild(ctlBtn('every call', 'every tool call waits for your yes/no in the log',
+  apBtns.appendChild(ctlBtn('every call', 'every tool call waits for Allow or Deny on this page',
     function () { postCtl('approval', { mode: 'always' }); }, approvalAlways));
   apBtns.appendChild(ctlBtn('never', 'tool calls run without approval',
     function () { postCtl('approval', { mode: 'never' }); }, !approvalAlways));

@@ -15,16 +15,11 @@ export type Config = {
   approve: string[];
   deny: string[];
   blockMs: number;
-  /** Expose the human channel (human_say/ask/wait, the approval gate). Off by default. */
-  human: boolean;
   /**
-   * Whether the local web UI runs. Not the same question as `human`: a hosted client
-   * (Gemini's "custom connected app") is configured by pasting credentials into *it*,
-   * so the flow needs the page that carries Allow/Deny without anybody having asked
-   * for the human channel. `--oauth` therefore starts the UI too, and the UI is then
-   * an approval console rather than a conversation.
+   * Expose the human channel: human_say/ask/wait, and the chat on the web page. Off by
+   * default. Approvals do not depend on it - they are Allow/Deny cards on the web page.
    */
-  humanUI: boolean;
+  human: boolean;
   uiPort: number;
   uiHost: string;
   uiToken: string;
@@ -53,9 +48,9 @@ export type Config = {
   serverName: string;
   /**
    * The one approval question, for every tool alike: "always" holds each call
-   * for a yes/no from the human (and needs the human channel), "never" lets
-   * every call run. The per-tool --approve list is gone in spirit: the flag is
-   * still accepted, but only as a way to say "always".
+   * for Allow or Deny on the web page, "never" lets every call run. The per-tool
+   * --approve list is gone in spirit: the flag is still accepted, but only as a
+   * way to say "always".
    */
   approvalMode: ApprovalMode;
   /** Upstream MCP servers from the config file, by name. Hot-managed at runtime. */
@@ -149,7 +144,6 @@ export function loadConfig(argv: string[]): Config {
     deny,
     blockMs: num(str(f["block-ms"], env.PI_AS_MCP_BLOCK_MS ?? ""), 90000),
     human,
-    humanUI: human || oauth,
     uiPort: num(str(f["ui-port"], env.PI_AS_MCP_UI_PORT ?? ""), 8790),
     uiHost: str(f["ui-host"], env.PI_AS_MCP_UI_HOST ?? "127.0.0.1"),
     uiToken: str(f["ui-token"], env.PI_AS_MCP_UI_TOKEN ?? ""),

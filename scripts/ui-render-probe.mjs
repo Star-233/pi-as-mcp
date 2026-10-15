@@ -336,20 +336,8 @@ const ENTRIES = [
     !quiet.w.document.querySelector("#side .warnbox"),
     quiet.w.document.getElementById("side").textContent.slice(0, 60));
 
-  // ...but a UI that others can reach, where authorizations are approved, is one.
-  const exposed = await boot(true);
-  exposed.w.fetch = async () => ({
-    ok: true, status: 200,
-    json: async () => ({ ...OAUTH_INFO, oauth: { ...OAUTH_INFO.oauth, uiExposed: true } }),
-    text: async () => "",
-  });
-  exposed.w.eval("loadInfo()");
-  await new Promise((r) => setTimeout(r, 50));
-  check("an off-machine human UI is called out",
-    /authorize themselves/.test(exposed.w.document.querySelector("#side .warnbox")?.textContent ?? ""));
   oauthBoot.dom.window.close();
   quiet.dom.window.close();
-  exposed.dom.window.close();
 
   dom.window.close();
   unsafe.dom.window.close();
@@ -357,15 +345,14 @@ const ENTRIES = [
 
 // ------------------------------------------------- composer vs approval console
 /*
- * The page runs for two different reasons now: the human channel is on, or --oauth
- * is and the page is only where an authorization gets approved. In the second case
- * there is no agent listening, so a message typed into the box would go nowhere -
- * the composer is hidden, by a class, and what is asserted is the *computed* display
+ * The page always runs, but the composer is only for the human channel. With the
+ * channel off there is no agent listening, so a message typed into the box would go
+ * nowhere - the composer is hidden, by a class, and what is asserted is the *computed* display
  * (a textContent check is exactly what let the invisible countdown ship).
  */
 {
   const INFO_OFF = {
-    ...INFO, human: false, humanUI: true, httpTokenSet: false,
+    ...INFO, human: false, httpTokenSet: false,
     oauth: { enabled: true, issuer: "https://bridge.example/",
       grants: { clients: 1, pending: 0, accessTokens: 0, refreshTokens: 0 } },
   };
@@ -377,8 +364,9 @@ const ENTRIES = [
   const footer = doc.querySelector("footer");
   const display = hosted.w.getComputedStyle(footer).display;
   check("no composer when no agent is listening", display === "none", `computed display: ${display}`);
-  check("the console says which job it is here for",
-    doc.getElementById("side").textContent.includes("--human"));
+  check("the console says the human channel is off, and that approvals still show",
+    doc.getElementById("side").textContent.includes("human channel is off") &&
+      doc.getElementById("side").textContent.includes("Approvals still appear"));
   check("and the empty timeline says what will appear in it",
     doc.getElementById("log").textContent.includes("connected client"),
     doc.getElementById("log").textContent.slice(0, 60));

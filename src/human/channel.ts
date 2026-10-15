@@ -51,7 +51,7 @@ function stamp(at: number): string {
  * Turn one or more queued messages into a single result.
  *
  * One message is returned verbatim: no prefix, no ceremony, and every consumer
- * that matches on the text - the approval regex in server.ts, the probes - keeps
+ * that matches on the text - the probes - keeps
  * working untouched.
  *
  * Several are merged oldest first, each line numbered and timestamped. The order
@@ -159,7 +159,7 @@ export class HumanChannel {
    * One message per call was the original behaviour and it was wrong: a human who
    * types three short lines has had one thought, and delivering only the first
    * line means the agent can act on an instruction the second line retracts.
-   * Callers that need to judge the answer - the approval gate - parse every line
+   * Callers that need to judge the answer parse every line
    * rather than asking for fewer of them.
    */
   private await(blockMs: number, kind: "ask" | "wait"): Promise<WaitResult> {

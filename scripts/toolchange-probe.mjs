@@ -65,7 +65,7 @@ const writeConfig = (mut) => fs.writeFileSync(configFile, JSON.stringify({ mcps:
 writeConfig({ enabled: true });
 
 const logs = [];
-const child = spawn(process.execPath, ["src/index.ts", "--root", path.join(tmp, "root"), "--http", "--port", String(PORT), "--token", TOKEN], {
+const child = spawn(process.execPath, ["src/index.ts", "--root", path.join(tmp, "root"), "--http", "--port", String(PORT), "--token", TOKEN, "--ui-port", "8805"], {
   cwd: repo,
   env: { ...process.env, PI_AS_MCP_CONFIG: configFile },
   stdio: ["ignore", "pipe", "pipe"],

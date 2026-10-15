@@ -22,6 +22,7 @@ import { McpAggregator } from "./attach-mcp.ts";
 import { OAuthProvider, sameSecret } from "./oauth.ts";
 import { mountOAuthEndpoints } from "./oauth-http.ts";
 import { Sandbox } from "./sandbox.ts";
+import { ApprovalGate } from "./approval.ts";
 import { HumanChannel } from "./human/channel.ts";
 import { startWebUI } from "./human/webui.ts";
 import { loadPiTools } from "./pi-tools.ts";
@@ -37,6 +38,7 @@ if (cfg.configFileError) {
   log(`config file: ${cfg.configPath}`);
 }
 const channel = new HumanChannel();
+const approvals = new ApprovalGate();
 const sandbox = new Sandbox(cfg.root, cfg.deny);
 
 /**
@@ -142,9 +144,6 @@ const controls = {
   },
   async setHuman(on: boolean): Promise<void> {
     if (on !== true && on !== false) throw new Error("enabled must be true or false");
-    if (!on && state.approvalMode === "always") {
-      throw new Error('approval mode is "always", which needs the human channel to answer the gate; switch approval to "never" first');
-    }
     state.human = on;
     writeFileConfig((c) => {
       c.human = on;
@@ -153,9 +152,6 @@ const controls = {
   },
   async setApproval(mode: "always" | "never"): Promise<void> {
     if (mode !== "always" && mode !== "never") throw new Error('approval mode is "always" or "never"');
-    if (mode === "always" && !state.human) {
-      throw new Error('approval mode "always" needs the human channel on: there would be nobody to approve the calls');
-    }
     state.approvalMode = mode;
     writeFileConfig((c) => {
       c.approval = { ...(c.approval ?? {}), mode };
@@ -216,9 +212,6 @@ const bridgeInfo = () => ({
   deny: cfg.deny,
   blockMs: cfg.blockMs,
   human: state.human,
-  // The page needs both: `humanUI` says whether there is a composer to type into,
-  // `human` whether an agent is listening on the other end of it.
-  humanUI: cfg.humanUI,
   transport: cfg.http ? "http" : "stdio",
   endpoint: cfg.http ? `http://${cfg.httpHost}:${cfg.httpPort}/mcp` : "stdio",
   httpTokenSet: Boolean(cfg.httpToken),
@@ -229,9 +222,6 @@ const bridgeInfo = () => ({
         enabled: true,
         issuer: issuer.href,
         grants: oauth.stats(),
-        // Approval happens on the UI, so a UI reachable off this machine - or one
-        // with no token - is a way for somebody else to authorize themselves.
-        uiExposed: Boolean(cfg.uiToken) === false && !isLoopbackHost(cfg.uiHost),
       }
     : { enabled: false },
   pid: process.pid,
@@ -243,40 +233,44 @@ function isLoopbackHost(host: string): boolean {
   return host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]";
 }
 
-// The web UI is started when the human channel is on, and also when only --oauth
-// is: the UI is where an authorization is approved, which is a question about
-// who may click Allow, not about whether the agent can hold a conversation.
-// Without either flag the bridge is a pure tool surface.
-let ui: { url: string; close: () => Promise<void> } | null = null;
-if (cfg.humanUI) {
-  try {
-    ui = await startWebUI(channel, {
-      host: cfg.uiHost,
-      port: cfg.uiPort,
-      token: cfg.uiToken,
-      info: bridgeInfo,
-      controls,
-      get oauth() {
-        return oauth;
-      },
-    });
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException)?.code;
-    log(
-      code === "EADDRINUSE"
-        ? `human UI port ${cfg.uiPort} is already in use. Pick another with --ui-port.`
-        : `could not start the human UI on port ${cfg.uiPort}: ${err}`,
-    );
-    process.exit(1);
-  }
+// The web page always runs: it is where approvals are answered, and where a client's
+// authorization is granted, so it is not optional. Its chat is a separate switch (the
+// human channel). A page reachable from off this machine must carry a token; without
+// one the bridge refuses to start rather than hand a shell to whoever finds the port.
+if (!isLoopbackHost(cfg.uiHost) && !cfg.uiToken) {
   log(
-    cfg.human
-      ? `human channel: ${ui.url}`
-      : `approval UI: ${ui.url} (no --human, so human_say/ask/wait are off)`,
+    `--ui-host ${cfg.uiHost} is not a loopback address, so the web UI would be reachable from off ` +
+      "this machine with no token. Set --ui-token (or PI_AS_MCP_UI_TOKEN), or keep --ui-host on 127.0.0.1.",
   );
-} else {
-  log("human channel: off (start with --human to enable, or --oauth for approvals only)");
+  process.exit(1);
 }
+let ui: { url: string; close: () => Promise<void> };
+try {
+  ui = await startWebUI(channel, {
+    host: cfg.uiHost,
+    port: cfg.uiPort,
+    token: cfg.uiToken,
+    info: bridgeInfo,
+    controls,
+    approvals,
+    get oauth() {
+      return oauth;
+    },
+  });
+} catch (err) {
+  const code = (err as NodeJS.ErrnoException)?.code;
+  log(
+    code === "EADDRINUSE"
+      ? `web UI port ${cfg.uiPort} is already in use. Pick another with --ui-port.`
+      : `could not start the web UI on port ${cfg.uiPort}: ${err}`,
+  );
+  process.exit(1);
+}
+log(
+  cfg.human
+    ? `web UI: ${ui.url}`
+    : `web UI: ${ui.url} (human channel off: no chat or human_* tools; approvals still appear here)`,
+);
 
 const pi = await loadPiTools(cfg.root, cfg.tools, sandbox);
 if (pi.missing.length) log(`warning: unknown tools ignored: ${pi.missing.join(", ")}`);
@@ -312,18 +306,7 @@ log(
     : `tools: ${pi.tools.map((t) => t.name).join(", ")}`,
 );
 if (cfg.approvalMode === "always") {
-  // The approval gate needs somebody to ask. With the human channel off there is
-  // nobody, and "fail closed" must not degrade into "allow everything" - so this
-  // is a hard exit, not a warning. ("always" comes from --approve or the config
-  // file; the per-tool list a --approve used to take is now just this mode.)
-  if (!cfg.human) {
-    log(
-      'approval mode "always" needs the human channel: there would be nobody to answer the gate. ' +
-        "Restart with --human, or set human: true in the config file.",
-    );
-    process.exit(1);
-  }
-  log("approval: every tool call waits for a yes/no from the human");
+  log("approval: every tool call waits for Allow or Deny on the web UI");
 }
 if (cfg.blockMs > 100000) {
   log(
@@ -334,7 +317,8 @@ if (cfg.blockMs > 100000) {
 
 // One tracker for the whole process: what the agent was last shown is process-wide.
 const toolTracker = new ToolChangeTracker();
-const makeServer = () => createMcpServer(cfg, pi.tools, channel, { state, sandbox, aggregator, tracker: toolTracker });
+const makeServer = () =>
+  createMcpServer(cfg, pi.tools, channel, { state, sandbox, aggregator, tracker: toolTracker, approvals });
 
 /** Two upstream configs are the same if they differ at most in the enabled flag. */
 function sameUpstream(a: McpUpstream | undefined, b: McpUpstream): boolean {
@@ -389,23 +373,15 @@ const unwatchConfig = watchFileConfig((file, prev) => {
   // would never converge. Setting from the file is idempotent and always
   // converges; `prev` is only for the change log and the restart-layer notice.
   if (file.human !== undefined) {
-    if (!file.human && state.approvalMode === "always") {
-      log('config: refusing to turn the human channel off while approval mode is "always" - the gate would have nobody to answer it.');
-    } else {
-      const changed = state.human !== file.human;
-      state.human = file.human;
-      if (changed) log(`config (hot): human channel ${state.human ? "on" : "off"}`);
-    }
+    const changed = state.human !== file.human;
+    state.human = file.human;
+    if (changed) log(`config (hot): human channel ${state.human ? "on" : "off"}`);
   }
   const mode = file.approval?.mode;
   if (mode === "always" || mode === "never") {
-    if (mode === "always" && !state.human) {
-      log('config: refusing approval mode "always" while the human channel is off - there would be nobody to answer. Turn the channel on first.');
-    } else {
-      const changed = state.approvalMode !== mode;
-      state.approvalMode = mode;
-      if (changed) log(`config (hot): approval mode ${mode}`);
-    }
+    const changed = state.approvalMode !== mode;
+    state.approvalMode = mode;
+    if (changed) log(`config (hot): approval mode ${mode}`);
   }
   // Reconcile unconditionally: it diffs the file against the live aggregator
   // itself, so coalescing cannot desynchronize it, and it early-returns on
@@ -432,7 +408,7 @@ if (cfg.http) {
   app.set("trust proxy", 1);
 
   if (cfg.oauth && issuer && resource) {
-    oauth = new OAuthProvider({ uiUrl: ui?.url ?? `http://${cfg.uiHost}:${cfg.uiPort}/`, staticClient });
+    oauth = new OAuthProvider({ uiUrl: ui.url, staticClient });
     // Mounted first, so these two paths win over the SDK's own. The SDK still
     // serves discovery, registration and revocation; see src/oauth-http.ts for why
     // /authorize and /token are not its.
@@ -486,12 +462,6 @@ if (cfg.http) {
       log(
         "warning: the issuer is a loopback address, so a client off this machine cannot use it. " +
           "Restart with --issuer <the URL clients reach, e.g. https://your-host>.",
-      );
-    }
-    if (cfg.uiToken === "" && !isLoopbackHost(cfg.uiHost)) {
-      log(
-        `warning: --oauth with --ui-host ${cfg.uiHost} and no --ui-token means anyone who can reach ` +
-          "the human UI can approve an authorization and be handed a shell here.",
       );
     }
   }
@@ -570,7 +540,7 @@ if (cfg.http) {
     } else {
       log("could not start the HTTP listener:", err);
     }
-    await ui?.close();
+    await ui.close();
     process.exit(1);
   }
   log(`MCP over HTTP: http://${cfg.httpHost}:${cfg.httpPort}/mcp`);
@@ -590,6 +560,7 @@ const stop = async () => {
   log("shutting down");
   unwatchConfig();
   channel.shutdown();
+  approvals.close();
   try {
     await aggregator?.closeAll();
   } catch {
@@ -600,7 +571,7 @@ const stop = async () => {
   } catch {
     /* ignore */
   }
-  await ui?.close();
+  await ui.close();
   process.exit(0);
 };
 process.on("SIGINT", stop);

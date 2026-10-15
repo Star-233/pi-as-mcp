@@ -80,7 +80,7 @@ write(path.join(base, "big", "AGENTS.md"), "a".repeat(CONTEXT_MAX_BYTES + 5000))
 // ---------------------------------------------------------------- part two
 const root = path.join(base, "repo", "sub", "deep");
 const logs = [];
-const child = spawn(process.execPath, ["src/index.ts", "--root", root, "--http", "--port", String(PORT), "--token", TOKEN], {
+const child = spawn(process.execPath, ["src/index.ts", "--root", root, "--http", "--port", String(PORT), "--token", TOKEN, "--ui-port", "8803"], {
   cwd: repo,
   env: { ...process.env, HOME: home, USERPROFILE: home },
   stdio: ["ignore", "pipe", "pipe"],
