@@ -53,13 +53,6 @@ export type TunnelFileConfig = {
 export type BridgeConfigFile = {
   human?: boolean;
   approval?: { mode?: ApprovalMode };
-  /**
-   * false is full access for the file tools (read, write, edit, ls, grep, find):
-   * the sandbox root and the deny list stop applying, so they reach any path the
-   * bridge's user can. bash and powershell were never confined. Anything but an
-   * explicit false keeps the confinement on, so a typo cannot widen it.
-   */
-  confine?: boolean;
   mcps?: Record<string, McpUpstream>;
   tunnel?: TunnelFileConfig;
 };

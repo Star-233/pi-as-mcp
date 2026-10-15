@@ -22,8 +22,6 @@ const checks = [
   // The human channel is off by default: a packaged deployment is a tool surface,
   // and a model told about tools it cannot call will try to call them.
   ["human", c.human, false],
-  // Confinement is on unless the config file says full access in so many words.
-  ["confine", c.confine, true],
   ["tools.length", c.tools.length, expectedTools.length],
   ["tools", c.tools.join(","), expectedTools.join(",")],
   ["approve.length", c.approve.length, 0],

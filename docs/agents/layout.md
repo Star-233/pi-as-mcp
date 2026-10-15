@@ -27,10 +27,7 @@
 | `scripts/oauth-probe.mjs` | The whole authorization flow, including the negatives: a replayed code, a wrong PKCE verifier, a denial, a forged decision, an untrusted client name. Runs three servers, because the shape of the client decides the shape of the flow: the spec-shaped one, a hosted "custom connected app" with no PKCE, and the default one where the redirect URI arrives late. |
 | `scripts/ui-probe.mjs` | Drives the UI's HTTP surface: page, vendored assets, `/info`, `/health`, the SSE stream. Asserts; exits non-zero. |
 | `scripts/ui-render-probe.mjs` | Runs the page's own inline script in jsdom against the vendored libs and asserts what it renders, authorization cards included. |
-| `scripts/shell-guard-probe.mjs` | The shell guard: a fixed list of destructive command lines must be refused and ordinary ones allowed, as strings; one harmless canary goes through the bridge. |
-| `scripts/confine-probe.mjs` | The `confine` setting: the file tools held to the root and the deny list by default, released and re-confined by a hot edit of the config file. |
-| `scripts/controls-probe.mjs` |
- The unified config file, the movable sandbox root, the upstream aggregator, and the web UI's `/ctl` endpoints over real traffic — plus the hot-reload watcher. |
+| `scripts/controls-probe.mjs` | The unified config file, the movable sandbox root, the upstream aggregator, and the web UI's `/ctl` endpoints over real traffic — plus the hot-reload watcher. |
 | `scripts/fixtures/mini-mcp-server.mjs` | The smallest possible MCP server (two tools over stdio), so the aggregator can be tested against a real upstream with no network. |
 | `bin/supervise.mjs` | Parent-death watchdog so children cannot outlive the launcher. |
 
