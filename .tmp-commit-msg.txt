@@ -1,0 +1,3 @@
+chore: remove a stray temp file from the release commit
+
+- `git add -A` staged `.tmp-msg.txt` into "chore: release 0.3.0": `.gitignore`'s `.tmp-*/` is a directory pattern and does not match a file of that name. The file is gone, and gotcha 20 records the trap.
