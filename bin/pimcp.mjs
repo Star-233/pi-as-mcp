@@ -107,7 +107,8 @@ Passed through to the server:
                        waits for a yes/no in the human UI. Any value after the flag is
                        accepted for compatibility but ignored - the list is gone, one
                        setting covers everything. Needs --human.
-  --deny <paths>       Extra paths to refuse even inside the root.
+  --deny <paths>       Paths whose calls always wait for Allow or Deny in the human UI, in
+                       every approval mode. Relative entries resolve against --root.
   --tools <list>       Expose only this comma-separated subset.
   --block-ms <n>       Max time human_ask/human_wait block (default 90000).
 `;

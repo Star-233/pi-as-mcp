@@ -1,11 +1,11 @@
 ---
 name: pimcp
-description: Configure this bridge itself (pi-as-mcp, the pimcp command): attach or detach MCP servers, the approval mode, the human channel, the config file, and what only the human can change. Use when a task involves adding an MCP server, changing approvals or settings, or when a tool you expect is missing or an upstream is reported unavailable.
+description: Configure this bridge itself (pi-as-mcp, the pimcp command): attach or detach MCP servers, the approval mode, the human channel, the config file, and the deny list. Use when a task involves adding an MCP server, changing approvals or settings, or when a tool you expect is missing or an upstream is reported unavailable.
 ---
 
 # Configuring the pimcp bridge
 
-You are connected to pi-as-mcp, a bridge running on the human's computer. Its settings live in one file, `~/.pimcp/config.json`. The human controls most of them. You can read the current state and propose changes.
+You are connected to pi-as-mcp, a bridge running on the human's computer. Its settings live in one file, `~/.pimcp/config.json`, and you may read and write it. Under `never` an edit applies to the running bridge; under `always` every call is held for Allow or Deny, an edit included.
 
 ## See the current state
 
@@ -13,22 +13,23 @@ You are connected to pi-as-mcp, a bridge running on the human's computer. Its se
 - Upstream tools are prefixed with their server's name, for example `github_list`. They pass the same approval gate and appear in the same timeline as local tools.
 - A `[bridge notice]` on a result means the tool list, a project instructions file, or a skill changed since you last saw it. It is shown once.
 
-## What only the human can change
+## Changing the bridge yourself
 
-Do not try to change these yourself, by any route:
+Write `~/.pimcp/config.json` when the task needs a setting changed. The file is watched, so `human`, `approval.mode` and `mcps` apply to the running bridge; `tunnel` is read at startup and says so when it changes. Under `always` the write waits on the same Allow/Deny card as any other call, so a setting change can be refused like anything else.
 
-- the sandbox root (`--root`), which only the web UI can move;
-- the approval mode (`approval.mode`);
-- upstream MCP servers: attaching, detaching, or enabling one;
-- the human channel (`human`), the tunnel, and OAuth clients. Only the human can grant an authorization, by a click on the local page.
+What is not yours to change:
 
-Do not write `~/.pimcp/config.json`, even if the sandbox lets you reach it. It is the human's file. Do not start a second bridge to get around a setting.
+- the working directory (`--root`) and the deny list (`--deny`): they come from the command line and the environment, not from the file. The human moves the root from the web UI;
+- granting an OAuth authorization: only a click on the local page grants one;
+- the tunnel's live wiring: a change takes effect on the next start.
+
+Do not start a second bridge to get around a setting.
 
 If a task needs one of these, ask the human with `human_ask`. If the human channel is off, say so in your final answer. Name the exact change, and never ask the human to paste a secret into the chat. Tell them which field to fill in, and where.
 
-## Propose an upstream MCP server
+## Adding an upstream MCP server
 
-Give the human the entry to add, with placeholders for secrets:
+Add the entry to `mcps` in the config file: under `never` it connects to the running bridge straight away. Hand the entry to the human instead when the mode is `always` and they should own the edit, or when it needs a secret you do not have. Placeholders for secrets:
 
 ```json
 "mcps": {
@@ -48,6 +49,8 @@ Give the human the entry to add, with placeholders for secrets:
 - `approval.mode`: `"always"` holds every tool call, `read` included, until the human clicks Allow or Deny in the web UI. `"never"` runs everything. Approval does not depend on the chat channel, and a chat reply does not approve a call. A call nobody answers is refused.
 - `mcps`: upstream servers, as above.
 - `tunnel`: how the public address is made. A change needs a restart.
+
+The deny list is not a key here: it comes from `--deny` / `PI_AS_MCP_DENY`. It never refuses a call - a path argument that matches an entry is held for Allow or Deny in the web UI in **every** approval mode, `never` included. Path arguments are not confined to the root either: any path the process can reach is readable and writable, this config file included.
 
 A flag on the command line beats the file. The file is watched, so `human`, `approval` and `mcps` apply to a running bridge without a restart. A malformed file is ignored, and the reason is reported to the human. Do not guess at a fix. Ask the human to check the file.
 

@@ -60,17 +60,20 @@ fs.writeFileSync(configFile, "{ not json");
 const c4 = loadConfig([]);
 check("a broken file is ignored, not fatal", c4.human === false && c4.approvalMode === "never");
 
-console.log("--- sandbox root switch");
-const sb = new Sandbox(path.join(tmp, "rootA"), []);
-check("resolves inside the root", sb.resolve("a.txt") === path.join(tmp, "rootA", "a.txt"));
-let escaped = false;
-try { sb.resolve("../rootB/b.txt"); } catch { escaped = true; }
-check("escape refused", escaped);
+console.log("--- root switch and the deny list");
+const sb = new Sandbox(path.join(tmp, "rootA"), [path.join(tmp, "denied")]);
+check("resolves inside the root", sb.resolve("a.txt").path === path.join(tmp, "rootA", "a.txt"));
+check("nothing needs approval by default", sb.resolve("a.txt").needsApproval === false);
+check("a path outside the root is resolved, not refused",
+  sb.resolve("../rootB/b.txt").path === path.join(tmp, "rootB", "b.txt"));
+check("a deny-listed path is marked for approval",
+  sb.resolve(path.join(tmp, "denied", "x.txt")).needsApproval === true);
+check("the marking says why",
+  /deny list/.test(sb.resolve(path.join(tmp, "denied", "x.txt")).reason ?? ""));
 sb.setRoot(path.join(tmp, "rootB"));
-check("after the move, resolve follows the new root", sb.resolve("b.txt") === path.join(tmp, "rootB", "b.txt"));
-let escapedAgain = false;
-try { sb.resolve("../rootA/a.txt"); } catch { escapedAgain = true; }
-check("the old root is out of bounds after the move", escapedAgain);
+check("after the move, resolve follows the new root", sb.resolve("b.txt").path === path.join(tmp, "rootB", "b.txt"));
+check("the old root is reachable and unapproved",
+  sb.resolve("../rootA/a.txt").needsApproval === false);
 let missing = false;
 try { sb.setRoot(path.join(tmp, "nope")); } catch { missing = true; }
 check("a missing directory is refused", missing);
@@ -230,7 +233,8 @@ try {
   const readB = await mcp("tools/call", { name: "read", arguments: { path: "b.txt" } });
   check("a read resolves in the new root", firstText(readB) === "from B\n", JSON.stringify(firstText(readB)));
   const oldRoot = await mcp("tools/call", { name: "read", arguments: { path: "../rootA/a.txt" } });
-  check("the old root is out of bounds after the move", Boolean(oldRoot.msg?.result?.isError));
+  check("the old root is still readable after the move",
+    firstText(oldRoot) === "from A\n", JSON.stringify(firstText(oldRoot)));
   const badRoot = await uiPost("root", { path: path.join(tmp, "nope") });
   check("a missing directory is refused, not fatal", badRoot.status === 400 && badRoot.body?.ok === false, JSON.stringify(badRoot.body));
 

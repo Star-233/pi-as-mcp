@@ -77,7 +77,8 @@ Passed through to the bridge:
                        human UI. A value after the flag is accepted but ignored.
                        Needs --human.
   --tools <list>       Expose only this comma-separated subset.
-  --deny <paths>       Extra paths to refuse even inside the root.
+  --deny <paths>       Paths whose calls always wait for Allow or Deny in the human UI, in
+                       every approval mode. Relative entries resolve against --root.
   --block-ms <n>       Max time human_ask/human_wait block (default 90000).
 `;
 

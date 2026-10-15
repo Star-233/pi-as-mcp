@@ -1,4 +1,4 @@
-import type { Sandbox } from "./sandbox.ts";
+import { describeCall, type ResolvedPath, type Sandbox } from "./sandbox.ts";
 import { isSkillPath, resolveSkillPath } from "./skills.ts";
 
 const PI_PACKAGE = "@earendil-works/pi-coding-agent";
@@ -87,6 +87,8 @@ export async function loadPiTools(
   cwd: string,
   wanted: string[],
   sandbox: Sandbox,
+  /** Ask the human to Allow or Deny a call that a deny-list path forces out of the mode. */
+  requestApproval: (name: string, summary: string, reason: string) => Promise<boolean>,
 ): Promise<PiTools> {
   // Runtime-selected specifier (bundled literal vs. checkout resolution); see
   // piToolEntryUrl for why a static import cannot work here.
@@ -120,16 +122,32 @@ export async function loadPiTools(
             const raw = effective[pathArg];
             if (typeof raw === "string" && isSkillPath(raw)) {
               // Skills are read-only and reached only through read. resolveSkillPath
-              // confines the file to its own skill directory, so the sandbox root does not apply.
+              // confines the file to its own skill directory, which is not the root.
               if (name !== "read") {
                 throw new Error(`${raw} is a skill path, and skill paths are read-only. Use read.`);
               }
               effective[pathArg] = resolveSkillPath(sandbox.root, raw);
             } else {
-              // Default to the sandbox root rather than the bridge process cwd.
-              effective[pathArg] = raw === undefined || raw === ""
-                ? sandbox.root
+              // Default to the root rather than the bridge process cwd.
+              const resolved: ResolvedPath = raw === undefined || raw === ""
+                ? { path: sandbox.root, needsApproval: false }
                 : sandbox.resolve(String(raw));
+              effective[pathArg] = resolved.path;
+              if (resolved.needsApproval) {
+                // A deny-list path is held for Allow or Deny whatever the mode is,
+                // so a path the human listed is never run unattended.
+                const allowed = await requestApproval(
+                  name,
+                  describeCall(name, effective),
+                  resolved.reason ?? "the path is on the deny list",
+                );
+                if (!allowed) {
+                  return {
+                    content: [{ type: "text", text: `Denied: the human did not approve this ${name} call.` }],
+                    isError: true,
+                  };
+                }
+              }
             }
           }
           const res = await def.execute(

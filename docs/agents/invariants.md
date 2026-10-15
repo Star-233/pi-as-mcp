@@ -11,8 +11,9 @@
    (per-tool guidelines in tool order → global guidelines → Pi's two closing rules).
 3. **Stateless HTTP needs a fresh `Server` + transport per request.** The transport keeps
    per-session state; reusing one instance makes every request after `initialize` fail with 500.
-4. **A sandbox rejection is a tool error, not a protocol error.** Path resolution must stay
-   inside the `try` in `pi-tools.ts` so the client sees `isError`, not a JSON-RPC failure.
+4. **A refusal is a tool error, not a protocol error.** A shell-guard block, and a deny-list
+   hold nobody answers, both come back as `isError`, never as a JSON-RPC failure: path
+   resolution and the approval wait stay inside the `try` in `pi-tools.ts`.
 5. **Approval fails closed.** `approval: always` (or `--approve`) holds each tool call for Allow or Deny on the web UI. No answer, a Deny, a full queue or a shutdown must deny, never run; a typed reply in the chat is not an answer.
 6. **stdout is the stdio protocol channel.** All logging goes to stderr.
 7. **No sessions, no persistence.** Do not add a session id, a store, or a broker. OAuth state is
@@ -60,5 +61,6 @@
 
 
 15. **A `skill://` address is read-only, and it opens only a file inside a discovered skill directory.** `resolveSkillPath` is the only way to open one. It does not use the sandbox root, because a skill can live outside the root, so the containment that matters is the skill's own directory, checked as written and after symlinks are resolved. Every tool except `read` refuses the address. `scripts/skill-probe.mjs` covers the escapes.
-16. **The shell guard runs before the approval gate, so no approval mode and no human answer lifts it.** `guardShell` (`src/shell-guard.ts`) reads the text of a `bash` or `powershell` command and refuses a short list of destructive lines (recursive deletes of a root, a home or the working directory; disk formats; power and boot commands; registry hive wipes). It is string analysis, not a sandbox: a shell can always be written around it. Everything else is left to the soft rule in the prompt. `--root` and the deny list apply to the file tools' path arguments only; `bash` and `powershell` are never path-checked. `scripts/shell-guard-probe.mjs` checks the lists as strings and sends one harmless canary through the bridge; it never runs a destructive command.
+16. **The shell guard runs before the approval gate, so no approval mode and no human answer lifts it.** `guardShell` (`src/shell-guard.ts`) reads the text of a `bash` or `powershell` command and refuses a short list of destructive lines (recursive deletes of a root, a home or the working directory; disk formats; power and boot commands; registry hive wipes). It is string analysis, not a sandbox: a shell can always be written around it. Everything else is left to the soft rule in the prompt. `--root` and the deny list apply to the file tools' path arguments only; `bash` and `powershell` are never path-checked, so a deny-listed path is reachable through a shell without a card. `scripts/shell-guard-probe.mjs` checks the lists as strings and sends one harmless canary through the bridge; it never runs a destructive command.
+17. **The deny list escalates, it never refuses.** A path argument that matches an entry comes back marked, and `pi-tools.ts` asks for the same Allow/Deny card `always` uses - in `never` too, so a deny-listed path is never touched unattended. The card needs no human channel, and an unanswered hold is denied. `scripts/controls-probe.mjs` covers the marking and the root switch.
 

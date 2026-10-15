@@ -340,11 +340,11 @@ table row.
 
 | Flag | Env | Default | Meaning |
 |---|---|---|---|
-| `--root` | `PI_AS_MCP_ROOT` | cwd | Sandbox root. Every path argument is confined here. |
+| `--root` | `PI_AS_MCP_ROOT` | cwd | Working directory. Every path argument resolves against it; a path outside it is allowed. |
 | `--human` | `PI_AS_MCP_HUMAN=1` | off | Expose the chat channel: `human_say`/`human_ask`/`human_wait` and the composer on the web UI. Approvals do not need it. |
 | `--tools` | `PI_AS_MCP_TOOLS` | 7 on Linux, 8 on Windows | Comma-separated subset to expose. `powershell` is Windows-only. |
 | `--approve` | `PI_AS_MCP_APPROVE` | none | Approval mode `"always"`: **every** tool call waits for Allow or Deny on the web UI. No answer means denied. One setting covers everything, upstreams included; a value given is accepted but ignored. |
-| `--deny` | `PI_AS_MCP_DENY` | none | Paths refused even inside the root. Relative entries resolve against `--root`. |
+| `--deny` | `PI_AS_MCP_DENY` | none | Paths whose calls always wait for Allow or Deny in the human UI, in every approval mode: it escalates, it never refuses. Relative entries resolve against `--root`. |
 | `--block-ms` | `PI_AS_MCP_BLOCK_MS` | 90000 | Max time `human_ask`/`human_wait` block before returning `no_message`, and how long a held tool call waits for Allow or Deny. |
 | `--http` | `PI_AS_MCP_HTTP=1` | off | Serve Streamable HTTP instead of stdio. |
 | `--port` / `--host` | `PI_AS_MCP_PORT` / `PI_AS_MCP_HOST` | 8777 / 127.0.0.1 | HTTP listener. A port already in use is a hard error, not a silent fallback. |
@@ -375,9 +375,10 @@ The bridge only reads these directories. The built-in skills are served by the b
 This bridge hands a remote model a shell on your machine. It is remote code execution by
 design, so:
 
-- **Run it in a container or VM, with only one work directory mounted.** `--root` confines
-  path arguments, but a shell can still reach anything the process can.
-- **The shell guard refuses a short list of destructive command lines** in every approval mode: a recursive delete of a root, a home or the working directory, a disk format, a shutdown, a boot-configuration or registry-hive wipe. It reads the text of a command, so it catches mistakes, not a determined caller. `--root` and the deny list apply to the file tools only; `bash` and `powershell` can reach any path. The deny list is empty unless you set `--deny`.
+- **Run it in a container or VM, with only one work directory mounted.** `--root` only decides
+  what a relative path argument resolves against: nothing confines a path, so every file the
+  process can read is reachable, its own config file included.
+- **The shell guard refuses a short list of destructive command lines** in every approval mode: a recursive delete of a root, a home or the working directory, a disk format, a shutdown, a boot-configuration or registry-hive wipe. It reads the text of a command, so it catches mistakes, not a determined caller. The deny list applies to the file tools' path arguments only, and it escalates rather than refuses: a call that touches one waits for Allow or Deny in every approval mode. `bash` and `powershell` are never path-checked, so a deny-listed path is reachable through a shell without a card. The deny list is empty unless you set `--deny`.
 - **Always set `--token` when using `--http`, unless you are using `--oauth`.** Without either,
   the port is unauthenticated and the bridge logs a warning.
 - **The web UI is the approval console** — for tool calls, and with `--oauth`, for authorizations.
@@ -543,8 +544,9 @@ npm run typecheck
 npm run accept  # end-to-end human acceptance; you reply in the browser
 ```
 
-The probes spawn the real server and assert on real MCP traffic, including that a sandbox
-escape is refused, that an unapproved shell command never runs, and that an authorization
+The probes spawn the real server and assert on real MCP traffic, including that a path outside
+the root is resolved rather than refused, that a deny-listed path is marked for approval, that
+an unapproved shell command never runs, and that an authorization
 code cannot be replayed, a wrong PKCE verifier is refused, and a denied request grants
 nothing. `scripts/oauth-probe.mjs` then runs two more servers, because the shape of the
 client decides the shape of the flow. One is a hosted product's "custom connected app" — a

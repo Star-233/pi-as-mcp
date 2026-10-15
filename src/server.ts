@@ -323,7 +323,9 @@ export function createMcpServer(
     // call - Pi's own and the proxied upstreams alike, because a proxied tool
     // can be as much of a shell as bash is. The hold is a card on the web page,
     // so it needs no human channel; with nobody at the page the call waits out
-    // the window and is refused (fails closed).
+    // the window and is refused (fails closed). A deny-list path reaches the
+    // same card from pi-tools.ts instead, whatever the mode: only the trigger
+    // differs, never the answer.
     if (
       extras.state.approvalMode === "always" &&
       name !== INSTRUCTIONS_TOOL &&

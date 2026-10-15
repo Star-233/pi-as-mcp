@@ -3,15 +3,25 @@ import path from "node:path";
 
 export class SandboxError extends Error {}
 
+/** A path resolved against the root, plus whether the call has to be approved first. */
+export type ResolvedPath = {
+  path: string;
+  /** True for a deny-list path: the call waits for Allow or Deny in every approval mode. */
+  needsApproval: boolean;
+  /** Why it needs approval, as the card the human reads should say it. */
+  reason?: string;
+};
+
 /**
- * Confines every path argument to a single root directory and refuses a small
- * set of credential locations. This is the only thing standing between a remote
- * model and the rest of the machine, so it fails closed.
+ * Holds the directory that relative path arguments resolve against, and the deny
+ * list. It does not confine anything: a path outside the root is resolved and
+ * used, not refused. What the deny list does is escalate - a call that touches
+ * one of its paths waits for a human Allow or Deny in every approval mode,
+ * `never` included, so a denied path is never run unattended.
  *
- * The root is no longer fixed at startup: the human can move it from the web UI
- * while the bridge runs (the agent never gets a tool for it - a remote model that
- * could widen its own sandbox is the one thing this class exists to prevent).
- * `setRoot` re-validates and recomputes the deny list, because deny entries are
+ * The root is not fixed at startup: the human can move it from the web UI
+ * while the bridge runs (the agent never gets a tool for it). `setRoot`
+ * re-validates and recomputes the deny list, because deny entries are
  * root-relative: a stale list would still be pointing at the old directory.
  */
 export class Sandbox {
@@ -51,26 +61,24 @@ export class Sandbox {
     this.deny = this.denySpec.map((d) => path.resolve(this.rootValue, d).toLowerCase());
   }
 
-  /** Resolve a tool-supplied path against the root and verify containment. */
-  resolve(input: string): string {
+  /** Resolve a tool-supplied path against the root, and say whether it is denied. */
+  resolve(input: string): ResolvedPath {
     const abs = path.resolve(this.root, input);
-    const rel = path.relative(this.root, abs);
-    if (rel.startsWith("..") || path.isAbsolute(rel)) {
-      throw new SandboxError(
-        `Path escapes the sandbox root. Allowed root: ${this.root}`,
-      );
-    }
     const lower = abs.toLowerCase();
     for (const d of this.deny) {
       if (lower === d || lower.startsWith(d + path.sep)) {
-        throw new SandboxError(`Path is on the deny list: ${path.relative(this.root, abs)}`);
+        return {
+          path: abs,
+          needsApproval: true,
+          reason: `the path is on the deny list: ${path.relative(this.root, abs)}`,
+        };
       }
     }
-    return abs;
+    return { path: abs, needsApproval: false };
   }
 
   /** Resolve an optional path argument, leaving it undefined when absent. */
-  resolveOptional(input: unknown): string | undefined {
+  resolveOptional(input: unknown): ResolvedPath | undefined {
     return typeof input === "string" && input.length > 0 ? this.resolve(input) : undefined;
   }
 }

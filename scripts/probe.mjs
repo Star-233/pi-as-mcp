@@ -65,9 +65,11 @@ try {
   console.log("3) read hello.txt ->", JSON.stringify(firstText(read)).slice(0, 120));
 
   const esc = await call("read", { path: "../../../Windows/win.ini" });
-  console.log("4) sandbox escape ->", esc.error
-    ? "RPC-ERROR(should be isError): " + JSON.stringify(esc.error).slice(0, 90)
-    : esc.result.isError ? "BLOCKED: " + firstText(esc).slice(0, 70) : "*** NOT BLOCKED ***");
+  const escText = esc.error ? JSON.stringify(esc.error) : firstText(esc);
+  console.log("4) outside the root ->",
+    /escapes the sandbox root/i.test(escText)
+      ? "*** STILL REFUSED ***"
+      : "reached the tool: " + escText.slice(0, 70).replace(/\s+/g, " "));
 
   const write = await call("write", { path: "sub/new.txt", content: "written by probe" });
   console.log("5) write ->", write.result.isError ? "ERR " + firstText(write) : firstText(write));

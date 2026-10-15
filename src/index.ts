@@ -272,7 +272,12 @@ log(
     : `web UI: ${ui.url} (human channel off: no chat or human_* tools; approvals still appear here)`,
 );
 
-const pi = await loadPiTools(cfg.root, cfg.tools, sandbox);
+const pi = await loadPiTools(cfg.root, cfg.tools, sandbox, (name, summary, reason) => {
+  // A deny-list path escalates to a human answer in every mode. Under "always"
+  // the gate already approved this call: the same decision, one card.
+  if (state.approvalMode === "always") return Promise.resolve(true);
+  return approvals.request(name, summary, reason, cfg.blockMs);
+});
 if (pi.missing.length) log(`warning: unknown tools ignored: ${pi.missing.join(", ")}`);
 
 // Upstream MCP tools are prefixed with their server's name, so the only rule
