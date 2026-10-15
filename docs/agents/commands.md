@@ -13,20 +13,20 @@ npm run accept    # human acceptance: drives the real server, you reply in the b
 npm run package   # build a portable dist/<platform>-<arch>/ (needs network for the Node runtime)
 npm link          # once: puts `pimcp` on PATH (run from anywhere afterwards)
 pimcp
-pimcp --human          # ...and the human channel (off by default)
+pimcp --human          # ...and the chat channel (off by default)
 pimcp --oauth-redirect https://oauth-redirect.googleusercontent.com/r/<app>
                        # (optional) name the one address a hand-configured client may return
                        # to before it asks. Without it that address arrives with the first
                        # request and is allowed by the human's click on the card.
 
 node src/index.ts --root <dir>                                  # stdio, tools only
-node src/index.ts --root <dir> --human                          # stdio + human UI on :8790
+node src/index.ts --root <dir> --human                          # stdio, the chat channel, and the web UI on :8790
 node src/index.ts --root <dir> --http --port 8777 --token <tok> # for a remote client
 node src/index.ts --root <dir> --http --oauth --issuer https://host
 ```
 
-`--oauth` needs `--http`, and it starts the web UI — not the human channel. The UI is where
-an authorization is approved; `--human` is whether the agent can also *talk* to you. All
+`--oauth` needs `--http`. The web UI always runs, with or without it: that is where tool calls and
+authorizations are approved. `--human` is whether the agent can also *talk* to you. All
 environment variables use the `PI_AS_MCP_` prefix.
 
 `~/.pimcp/config.json` (moved with `PI_AS_MCP_CONFIG`) unifies what a run is steered by:

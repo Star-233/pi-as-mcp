@@ -4,7 +4,7 @@
 model-arena platform) two things on the local machine:
 
 1. Pi's coding tools — `read`, `write`, `edit`, `ls`, `grep`, `find`, `bash`, `powershell`.
-2. A human channel — `human_say`, `human_ask`, `human_wait`, surfaced in a local web page.
+2. A human channel — `human_say`, `human_ask`, `human_wait`, plus a local web page where the human approves tool calls and authorizations.
 
 It can also be its own **OAuth 2.1 authorization server** (`--oauth`, and on by default in
 `pimcp`), so a client can be given access without a token being pasted into it. Both shapes

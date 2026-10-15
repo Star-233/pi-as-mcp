@@ -13,7 +13,7 @@
    per-session state; reusing one instance makes every request after `initialize` fail with 500.
 4. **A sandbox rejection is a tool error, not a protocol error.** Path resolution must stay
    inside the `try` in `pi-tools.ts` so the client sees `isError`, not a JSON-RPC failure.
-5. **Approval fails closed.** `--approve bash` with no human answer must deny, never run.
+5. **Approval fails closed.** `approval: always` (or `--approve`) holds each tool call for Allow or Deny on the web UI. No answer, a Deny, a full queue or a shutdown must deny, never run; a typed reply in the chat is not an answer.
 6. **stdout is the stdio protocol channel.** All logging goes to stderr.
 7. **No sessions, no persistence.** Do not add a session id, a store, or a broker. OAuth state is
    in-memory for the same reason: no token database, no persistence across a restart.
@@ -23,8 +23,9 @@
    request and waits. The decision travels through `202 POST /oauth/decision` on the local UI,
    which is loopback-bound and can carry `--ui-token`. Do not move, mirror or "also allow" that
    decision anywhere reachable by the client, and do not accept an OAuth answer through the
-   human channel's text box — a typed "yes" there belongs to the *tool* approval gate, and mixing
-   the two would let a message approve a shell command and an authorization at once.
+   human channel's text box. Tool calls are approved on their own Allow/Deny cards, so a typed "yes"
+   approves nothing, and keeping the two paths apart is what stops a message from approving a shell
+   command and an authorization at once.
 9. **The OAuth AS never invents its own issuer.** It is `--issuer`, or the tunnel hostname, or
    loopback, and it must be the URL the client actually reached; the two metadata documents have
    to agree on it. `scripts/oauth-probe.mjs` asserts that agreement, because a mismatch is

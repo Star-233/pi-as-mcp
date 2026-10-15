@@ -2,10 +2,11 @@
 
 | Path | What |
 |---|---|
-| `src/index.ts` | Entry point. Config, human UI, HTTP (an express app) or stdio transport, the bearer check, the OAuth router. |
+| `src/index.ts` | Entry point. Config, the web UI (always started), HTTP (an express app) or stdio transport, the bearer check, the OAuth router. |
 | `src/pi-tools.ts` | Imports Pi's tool definitions and adapts them to MCP. |
 | `src/prompt.ts` | Reproduces Pi's system-prompt algorithm, plus the `<human>` and skills sections. |
 | `src/server.ts` | MCP server: tool list, human tools, approval gate (one setting for every tool), upstream tool forwarding. |
+| `src/approval.ts` | The approval gate's holds: each held tool call waits for Allow or Deny from the web UI (`request`/`decide`/`pending`/`subscribe`), at most 20 at once. A Deny, a timeout, a full queue or a shutdown all refuse the call. |
 | `src/skills.ts` | Skill discovery (`~/.agents/skills`, and the project's `.agents/skills`, `.claude/skills` and `.pi/skills` from the git root down) and the `skill://` address. Read-only. A path is confined to its skill directory, after symlinks are resolved. |
 | `builtin-skills/` | Skills that ship with the bridge (`pimcp`: how to configure it). Served only by the bridge, never copied into another agent's directory. `scripts/package.mjs` copies it into `app/`. |
 | `src/sandbox.ts` | Path containment + deny list. The root is movable at runtime (`setRoot`), by the human through the web UI only. |
@@ -15,7 +16,7 @@
 | `src/oauth.ts` | The OAuth 2.1 authorization server's storage and its one human decision: clients, consent requests, codes, tokens. |
 | `src/oauth-http.ts` | `/authorize` and `/token`, written here instead of taken from the SDK router: PKCE required only from a public client, the secret accepted in the body or as HTTP Basic, and a redirect URI the client was never configured with accepted for a confidential client (the human's click decides it). Mounted before `mcpAuthRouter`, so it shadows those two paths in it. |
 | `src/human/channel.ts` | In-memory single-human channel (the whole "session" story). Chat *and* tool-call entries share one ordered list. |
-| `src/human/webui.ts`, `ui.html` | The web UI (SSE + POST): timeline, runtime info panel, wait countdown, alerts, the **Allow/Deny cards** that are the only way to grant an authorization — and, when `--human` is off, the same page as an approval console with no composer. The sidebar's `/ctl/*` endpoints steer the running bridge (root, human channel, approval mode, upstream MCPs); they are refused outright while the UI is reachable off this machine with no token. |
+| `src/human/webui.ts`, `ui.html` | The web UI (SSE + POST), always started: timeline, runtime info panel, wait countdown, alerts, the **Allow/Deny cards** above the timeline for held tool calls (`/approval/decision`) and for authorizations (`/oauth/decision`, the only way to grant one). With `--human` off there is no composer, only the cards. The sidebar's `/ctl/*` endpoints steer the running bridge (root, human channel, approval mode, upstream MCPs); they are refused outright while the UI is reachable off this machine with no token. |
 | `src/human/vendor/` | marked + KaTeX, copied from `node_modules` by `npm run vendor-ui`. Committed; the UI must work with no network. |
 |`scripts/*.mjs`|Probes that drive the real server over real MCP traffic.|
 |`scripts/package.mjs`|Builds `dist/<platform>-<arch>/`: bundled JS (Pi's tools inlined) + the UI assets + a Node runtime + cloudflared, so the recipient needs nothing installed.|

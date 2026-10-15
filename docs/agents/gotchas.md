@@ -1,21 +1,18 @@
 # Gotchas
 
-- **The human channel is off by default.** `--human` (or `PI_AS_MCP_HUMAN=1`) turns on the
-  `human_*` tools, the `<human>` prompt section, and the approval gate as one
-  unit — nothing may be half-on, because a model told about a tool it cannot call will call
-  it. Verified over real stdio traffic: without the flag `tools/list` returns no `human_*`
-  entries, the prompt contains no `<human>` section, and `human_say` returns an error
-  naming the missing flag. Consequence for the probes: every script that exercises the
-  channel passes `--human` explicitly. **The web UI is not part of this unit**, and
-  conflating the two was a real bug: it made `--oauth` impossible to use without a
-  conversation channel (see the next entry).
-- **`--oauth` starts the web UI, and that is not `--human`.** An earlier version made
-  `--oauth` without `--human` a hard exit, on the reasoning that the approval page belongs to
-  the human channel. It does not: the page is where Allow/Deny lives, and a client configured
-  by hand needs a click, not a conversation. `Config.humanUI` is the single derived answer
-  (`human || oauth`) and both the UI start and the tool-call timeline read it. The gate's
-  answer still arrives through the channel, so `--approve` still needs `--human`: the
-  composer is gone when only `--oauth` is on, and a gate nobody can answer is not a gate.
+- **The chat channel is off by default.** `--human` (or `PI_AS_MCP_HUMAN=1`) turns on the
+  `human_*` tools and the `<human>` prompt section as one unit — nothing may be half-on,
+  because a model told about a tool it cannot call will call it. Verified over real stdio
+  traffic: without the flag `tools/list` returns no `human_*` entries, the prompt contains no
+  `<human>` section, and `human_say` returns an error naming the missing flag. Consequence for
+  the probes: every script that exercises the chat channel passes `--human` explicitly. **The
+  web UI is not part of this unit**: approvals and authorizations are decided on it, so it
+  always runs (see the next entry).
+- **The web UI always runs, and that is not `--human`.** Earlier versions tied the UI to
+  `--oauth` or to `--human`, on the reasoning that the approval page belongs to the chat
+  channel. It does not: the page is where Allow/Deny lives, and a client configured by hand
+  needs a click, not a conversation. The UI starts whenever the bridge runs; `--human` only adds
+  the composer and the `human_*` tools. Tool-call approvals do not depend on the chat at all.
 - **A hosted client is added with credentials from here, not by registering itself.** Gemini's
   "custom connected app" asks the human for a client id, a client secret and (behind a button)
   a redirect URI to allow. So the bridge mints a confidential client and prints its
@@ -57,10 +54,9 @@
   SDK, and the SDK's rate limiting stopped covering `/token` the moment our handler replaced
   it. Relying on a transitive dependency for the thing standing between the internet and a
   shell token is not a trade worth making.
-- **`--approve` without `--human` is a hard exit, not a warning.** The approval gate's whole
-  value is failing closed, and with no human there is no answerer — so a gate would have to
-  either deny everything or allow everything. Both are wrong, so `src/index.ts` exits with
-  a message instead of picking one.
+- **`--approve` does not need `--human`.** Its answers come from the Allow/Deny cards on the web
+  UI, which always runs, so there is always someone to ask. An earlier version exited at startup
+  without `--human`; that refusal is gone.
 - **The advertised OAuth issuer carries a trailing slash, and that is not a bug to fix.**
   `mcpAuthRouter` writes both the issuer and the resource metadata from `URL.href`, so a bare
   origin comes out as `https://host/`. What matters is that `authorization_servers[0]` in the
@@ -78,10 +74,6 @@
   `mcpAuthRouter` needs one. `express` is a dependency (it is also the SDK's), and
   `@types/express` is a devDependency — without it `tsc` fails on our own `import express`,
   even though `skipLibCheck` hides the same missing types inside the SDK's `.d.ts` files.
-- **`--approve` without `--human` is a hard exit, not a warning.** The approval gate's whole
-  value is failing closed, and with no human there is no answerer — so a gate would have to
-  either deny everything or allow everything. Both are wrong, so `src/index.ts` exits with
-  a message instead of picking one.
 - **The default tool list is platform-aware.** Pi's `getPowerShellConfig()` throws
   `The powershell tool is only available on Windows` on any other platform, but the
   resolver is lazy, so the tool *defines* fine and only fails when called. Advertising a
@@ -256,13 +248,9 @@
   Deliberately no settle window and no queue cap — the first message wakes a blocked call
   immediately and anything typed after that waits for the next call, and dropping a human's
   messages to protect a context window is the wrong trade.
-- **The approval gate has to parse every line of a merged answer.** The tempting shortcut — give the
-  gate only the first queued message — is *worse* than merging: `["yes", "no"]` would approve on the
-  "yes" and silently discard the retraction. `approves()` in `src/server.ts` strips the queue
-  prefixes and requires every line to match, so any retraction, or anything unrecognised, denies.
-  The stripping is not cosmetic: the old `^`-anchored regex never matches a merged string because it
-  starts with `[1/2 · `, so merging without stripping would deny every multi-message answer.
-  `scripts/http-probe.mjs` drives yes+no, no+yes and yes+ok over real MCP traffic.
+- **The approval gate takes a click, not text.** Tool calls are approved on the Allow/Deny cards,
+  so a merged chat answer cannot approve anything; the old text parser `approves()` is gone.
+  `scripts/http-probe.mjs` checks that a chat `yes` does not release a held call.
 - **`/events` never closes.** Anything that reads it to completion blocks forever; the first
   version of `ui-probe` did exactly that and had to be killed. Read one frame and abort
   (`firstFrame` in `scripts/ui-probe.mjs`), or collect frames against an `AbortController`.
@@ -281,8 +269,8 @@
   case to that probe.
 
 15. **The hot layer of the config file is applied, not diffed.** The watcher debounces bursts of UI saves into one read, so comparing against the previous read can miss a field that went A → B → A while the in-memory state still holds B. Every hot read sets the state from the file unconditionally (idempotent, always converging); `prev` is for the change log only. A UI reconnect of an upstream must also clear the `enabled: false` its disconnect wrote, or the next reconcile silently disconnects it again.
-16. **The `/ctl` endpoints are as sensitive as the OAuth decision.** They move the sandbox root and turn the approval gate off, so they are refused while the human UI is reachable from off the machine with no token — enforced, not warned about. And the sandbox root never moves by agent request: there is deliberately no tool for it, only the human's hand on the web UI.
-17. **Approval is one setting for every tool, upstreams included.** `--approve` still parses but means `approval.mode: "always"` — every call, `read` included, waits for a yes/no. A proxied upstream tool can be as much of a shell as `bash` is, so a per-tool list is a list that goes stale the moment a new tool is attached.
+16. **The `/ctl` endpoints are as sensitive as the OAuth decision.** They move the sandbox root and turn the approval gate off, so they are refused while the web UI is reachable from off the machine with no token. The bridge also refuses to start in that combination, so this is a second line, not the only one. And the sandbox root never moves by agent request: there is deliberately no tool for it, only the human's hand on the web UI.
+17. **Approval is one setting for every tool, upstreams included.** `--approve` still parses but means `approval.mode: "always"` — every call, `read` included, waits for Allow or Deny on the web UI. A proxied upstream tool can be as much of a shell as `bash` is, so a per-tool list is a list that goes stale the moment a new tool is attached.
 
 - **A tool-list change reaches the agent through its next tool result, once.** The stateless HTTP
   transport cannot send `tools/list_changed`, so `src/tool-watch.ts` compares the list with the last

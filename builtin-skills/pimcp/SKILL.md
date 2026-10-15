@@ -44,8 +44,8 @@ Give the human the entry to add, with placeholders for secrets:
 
 `~/.pimcp/config.json` (moved by the `PI_AS_MCP_CONFIG` environment variable) has these keys:
 
-- `human`: `true` turns the human channel on.
-- `approval.mode`: `"always"` holds every tool call, `read` included, for a yes/no in the web UI. `"never"` runs everything. `"always"` needs the human channel on. The bridge refuses to start in that combination, and it refuses a call that would need an approval nobody can give.
+- `human`: `true` turns the chat channel on (`human_say`, `human_ask`, `human_wait`).
+- `approval.mode`: `"always"` holds every tool call, `read` included, until the human clicks Allow or Deny in the web UI. `"never"` runs everything. Approval does not depend on the chat channel, and a chat reply does not approve a call. A call nobody answers is refused.
 - `mcps`: upstream servers, as above.
 - `tunnel`: how the public address is made. A change needs a restart.
 

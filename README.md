@@ -84,11 +84,10 @@ be steered by. A flag given on the command line beats the file; the file beats t
 }
 ```
 
-- **`human`** turns the human channel on, like `--human`.
+- **`human`** turns the chat channel on (`human_say`/`human_ask`/`human_wait` and the composer), like `--human`.
 - **`approval`** is one setting for every tool: `"always"` holds each call — `read` included,
-  and upstream tools too — for a yes/no in the web UI; `"never"` lets everything run. It needs
-  the human channel on; that combination is refused rather than auto-approving. (`--approve`
-  still works and means `"always"`.)
+  and upstream tools too — until you click Allow or Deny in the web UI; `"never"` lets everything run.
+  It does not depend on the chat channel. (`--approve` still works and means `"always"`.)
 - **`mcps`** are other MCP servers, attached as upstreams at startup. Their tools appear with
   the upstream's name as a prefix (`github_list`), behind the same approval gate and timeline
   as the local ones. An entry with `"enabled": false` stays configured but disconnected.
@@ -122,10 +121,10 @@ that wants them pasted into it instead (Gemini's "custom connected app"). A clie
 cannot do OAuth still has the bearer token. `--no-oauth` removes the authorization server
 entirely.
 
-**The human channel is off unless you pass `--human`.** Without it the agent gets no
-`human_say`/`human_ask`/`human_wait` and no `<human>` section in the prompt. The UI still
-runs whenever `--oauth` is on, because that is where an authorization is approved — it just
-has no composer and no conversation in it.
+**The chat channel is off unless you pass `--human`.** Without it the agent gets no
+`human_say`/`human_ask`/`human_wait` and no `<human>` section in the prompt. The web UI always
+runs: that is where tool calls are approved and authorizations are granted. Without `--human`
+it has no composer and no conversation in it.
 
 Without the wrapper:
 
@@ -136,10 +135,10 @@ node src/index.ts --root /path/to/workdir
 # remote client (HTTP). Point Arena at the printed URL.
 node src/index.ts --root /path/to/workdir --http --port 8777 --token "$(openssl rand -hex 16)"
 
-# with the human channel and a yes/no gate on shell commands
-node src/index.ts --root /path/to/workdir --human --approve bash
+# with the chat channel, and an Allow/Deny card on the web UI for every tool call
+node src/index.ts --root /path/to/workdir --human --approve
 
-# with an authorization server in front of it (the human channel is not required)
+# with an authorization server in front of it (no chat channel needed)
 node src/index.ts --root /path/to/workdir --http --oauth \
   --issuer https://mcp.example.com
 ```
@@ -265,10 +264,10 @@ consent page states what was asked for and what will actually be granted.
 from whatever address the client reached — over a quick tunnel, that is the open internet
 — and a button there would be an authorization any stranger who found the URL could click.
 The UI is bound to loopback and can carry `--ui-token`; a page that only you can open is
-the only kind that can be allowed to hand away a shell. Note that this is why `--oauth`
-starts the UI: the page carrying Allow/Deny is not something you have to want to *converse*
-with an agent to need. Without `--human` you get the UI as an approval console and nothing
-else — no `human_say`/`human_ask`/`human_wait`, no composer in the page.
+the only kind that can be allowed to hand away a shell. The page is always up, because
+Allow/Deny lives there, and approving a tool call or an authorization should not require
+wanting to *converse* with an agent. Without `--human` it has no composer and no
+`human_say`/`human_ask`/`human_wait` — only the approvals and authorizations.
 
 Requests wait 10 minutes for you and then expire; at most 8 may be pending at once. Everything
 is in memory: tokens, registered clients and pending requests all die with the process, so a
@@ -286,17 +285,16 @@ here than a quick tunnel, whose hostname changes every restart.
 
 `http://127.0.0.1:8790` is a single self-contained page — no CDN, no build step, and the
 markdown and LaTeX libraries are vendored in `src/human/vendor/`, so it works with the
-network off. It runs with `--human`, and with `--oauth` (where it is only an approval
-console: no composer, no conversation). Without either flag the port is never bound.
+network off. It always runs. With `--human` it carries the composer and the conversation; without it,
+it is only where approvals and authorizations are decided.
 
 - **One timeline.** Agent messages, your messages, and every tool call the agent runs on
   this machine, in the order they happened. Tool rows are compact
   (`bash · echo hi · 42 ms · ✓`); click one to expand its output. Failed calls expand
   themselves. The toolbar hides all tool rows if you only want the conversation.
-- **A runtime info panel** (`☰ info`): sandbox root, exposed tools, which tools need
-  approval, the deny list, the wait window, uptime, the MCP endpoint, and whether the
-  tokens are set. A port serving a shell with no token gets a red warning. Token *values*
-  are never shown.
+- **A runtime info panel** (`☰ info`): sandbox root, exposed tools, the approval mode, the
+  deny list, the wait window, uptime, the MCP endpoint, and whether the tokens are set.
+  Token *values* are never shown.
 - **A countdown.** `human_ask`/`human_wait` block for `--block-ms` (90s by default) and
   then return `no_message`. The header shows the seconds left so you know whether to
   hurry.
@@ -312,9 +310,12 @@ console: no composer, no conversation). Without either flag the port is never bo
   timeline — not in it, because it is not something the agent said — with **Allow** and
   **Deny**. It stays until you answer or it expires in 10 minutes, and it chimes like a
   question. The client's name is shown as text, never as markup: it chose that name itself.
-- **What ran on this machine.** Tool calls are listed whenever the UI is up, including the
-  `--oauth`-only case. Watching a client work while you decide whether to trust it is the
-  point of having the page there at all.
+- **Tool approval cards.** With `approval: "always"` (or `--approve`), each tool call appears above
+  the timeline with **Allow** and **Deny**, and the agent waits for your click. A chat reply does
+  not approve anything. No answer within `--block-ms` is a refusal, and so are a Deny, a full queue,
+  or a shutdown.
+- **What ran on this machine.** Tool calls are listed whenever the UI is up. Watching the agent
+  work while you decide whether to trust it is the point of having the page there at all.
 
 `ui.html` is read on every request, so changing it costs a browser refresh, not a restart of
 the bridge. Changes to `src/*.ts` still need a restart.
@@ -340,11 +341,11 @@ table row.
 | Flag | Env | Default | Meaning |
 |---|---|---|---|
 | `--root` | `PI_AS_MCP_ROOT` | cwd | Sandbox root. Every path argument is confined here. |
-| `--human` | `PI_AS_MCP_HUMAN=1` | off | Expose the human channel: `human_say`/`human_ask`/`human_wait` and the approval gate. The web UI comes with it, but is not exclusive to it — `--oauth` starts the UI too. |
+| `--human` | `PI_AS_MCP_HUMAN=1` | off | Expose the chat channel: `human_say`/`human_ask`/`human_wait` and the composer on the web UI. Approvals do not need it. |
 | `--tools` | `PI_AS_MCP_TOOLS` | 7 on Linux, 8 on Windows | Comma-separated subset to expose. `powershell` is Windows-only. |
-| `--approve` | `PI_AS_MCP_APPROVE` | none | Approval mode `"always"`: **every** tool call waits for a yes/no in the web UI (the tool list a value used to name is now ignored — one setting covers everything, upstreams included). **Needs `--human`**: with no human there is nobody to ask, so the bridge refuses to start instead of auto-approving. |
-| `--deny` | `PI_AS_MCP_DENY` | `.ssh,.aws,.gnupg,.git-credentials,.netrc,.config/gcloud` | Paths refused even inside the root. |
-| `--block-ms` | `PI_AS_MCP_BLOCK_MS` | 90000 | Max time `human_ask`/`human_wait` block before returning `no_message`. |
+| `--approve` | `PI_AS_MCP_APPROVE` | none | Approval mode `"always"`: **every** tool call waits for Allow or Deny on the web UI. No answer means denied. One setting covers everything, upstreams included; a value given is accepted but ignored. |
+| `--deny` | `PI_AS_MCP_DENY` | none | Paths refused even inside the root. Relative entries resolve against `--root`. |
+| `--block-ms` | `PI_AS_MCP_BLOCK_MS` | 90000 | Max time `human_ask`/`human_wait` block before returning `no_message`, and how long a held tool call waits for Allow or Deny. |
 | `--http` | `PI_AS_MCP_HTTP=1` | off | Serve Streamable HTTP instead of stdio. |
 | `--port` / `--host` | `PI_AS_MCP_PORT` / `PI_AS_MCP_HOST` | 8777 / 127.0.0.1 | HTTP listener. A port already in use is a hard error, not a silent fallback. |
 | `--token` | `PI_AS_MCP_TOKEN` | none | Bearer token. **Set this if you expose the port**, unless you use `--oauth`. |
@@ -352,8 +353,8 @@ table row.
 | `--issuer` | `PI_AS_MCP_ISSUER` | the tunnel hostname, else `http://127.0.0.1:<port>` | The URL clients reach, and the identity the authorization server advertises. Only with `--oauth`. Must be `https`, or a loopback `http` address. |
 | `--oauth-redirect` | `PI_AS_MCP_OAUTH_REDIRECT` | none | The addresses a hand-configured client may return to (comma-separated), named before it ever asks. **Without this the address is not known in advance**: the first one the client sends is shown on the approval card, and your click is what allows it. Only with `--oauth`. |
 | `--oauth-client-id` / `--oauth-client-secret` | `PI_AS_MCP_OAUTH_CLIENT_ID` / `…_SECRET` | minted per run | Use this credential pair instead of minting one, so a restart does not invalidate a pair a client already holds. Both together, and only with `--oauth`. |
-| `--ui-port` / `--ui-host` | `PI_AS_MCP_UI_PORT` / `PI_AS_MCP_UI_HOST` | 8790 / 127.0.0.1 | The web UI. Runs with `--human` or `--oauth`; ignored without either. |
-| `--ui-token` | `PI_AS_MCP_UI_TOKEN` | none | Token for the UI. **Set it if you bind the UI to anything but loopback** — with `--oauth`, the UI is what can grant access here. |
+| `--ui-port` / `--ui-host` | `PI_AS_MCP_UI_PORT` / `PI_AS_MCP_UI_HOST` | 8790 / 127.0.0.1 | The web UI. Always runs. A non-loopback `--ui-host` without `--ui-token` is refused at startup. |
+| `--ui-token` | `PI_AS_MCP_UI_TOKEN` | none | Token for the UI. **Required if you bind the UI to anything but loopback** (the bridge will not start otherwise). With `--oauth`, the UI is what can grant access here. |
 
 ## Project instructions and skills
 
@@ -376,12 +377,12 @@ design, so:
 
 - **Run it in a container or VM, with only one work directory mounted.** `--root` confines
   path arguments, but a shell can still reach anything the process can.
-- **The shell guard refuses a short list of destructive command lines** in every approval mode: a recursive delete of a root, a home or the working directory, a disk format, a shutdown, a boot-configuration or registry-hive wipe. It reads the text of a command, so it catches mistakes, not a determined caller. `--root` and the deny list apply to the file tools only; `bash` and `powershell` can reach any path.
+- **The shell guard refuses a short list of destructive command lines** in every approval mode: a recursive delete of a root, a home or the working directory, a disk format, a shutdown, a boot-configuration or registry-hive wipe. It reads the text of a command, so it catches mistakes, not a determined caller. `--root` and the deny list apply to the file tools only; `bash` and `powershell` can reach any path. The deny list is empty unless you set `--deny`.
 - **Always set `--token` when using `--http`, unless you are using `--oauth`.** Without either,
   the port is unauthenticated and the bridge logs a warning.
-- **With `--oauth`, the web UI is the authorization authority.** Keep it on loopback, or set
-  `--ui-token`. A UI that others can reach with no token is a way for them to authorize
-  themselves; the bridge warns and the info panel calls it out.
+- **The web UI is the approval console** — for tool calls, and with `--oauth`, for authorizations.
+  Keep it on loopback, or set `--ui-token`. A non-loopback `--ui-host` with no token is refused at
+  startup, because whoever could reach that page could approve their own access.
 - **A hand-configured client's secret is a credential you now have to keep.** It is printed
   once per run unless you pin it with `--oauth-client-id`/`--oauth-client-secret`; anyone who
   reads it can ask for access, but still cannot get a token without your click.
@@ -395,11 +396,10 @@ design, so:
   the process ends). Denying a request that has not been answered yet is the only way to
   refuse — once granted, the way to take it back is to restart the bridge. Keep the run short;
   that is what this process is for.
-- **Use `--human --approve` if you want a gate on every call.** Every tool call then blocks on
-  a yes/no prompt in the human UI — all of them, `read` included, upstream MCP tools too: one
-  setting, no per-tool list to keep complete. It **fails closed**: no answer means denied. The
-  gate needs `--human`, because with the human channel off there is nobody to ask — the bridge
-  refuses to start rather than let `--approve` silently mean "allow".
+- **Use `--approve` if you want a gate on every call.** Every tool call then blocks until you click
+  Allow or Deny on the web UI — all of them, `read` included, upstream MCP tools too: one setting,
+  no per-tool list to keep complete. It **fails closed**: no answer means denied. It does not need
+  `--human`, and a chat reply does not count as an approval.
 - **Rotate the token per sitting.** For one-shot use, quick tunnels that change hostname are
   fine — they expire on their own.
 - Tool output (file contents, command output) transits the remote platform and may be logged
@@ -586,10 +586,10 @@ same address.
   fine as long as the two documents agree — a client resolves the metadata endpoint from
   `authorization_servers[0]` and compares the issuer it finds against exactly that string —
   which is what `scripts/oauth-probe.mjs` checks. Do not "fix" one of them by hand.
-- **`--oauth` starts the web UI, and that is not the same as `--human`.** The UI is where
-  Allow/Deny lives; the human channel is whether the agent can *talk* to you. Requiring
-  `--human` for `--oauth` is what made a hosted client impossible to add: an authorization
-  needs a click, not a conversation.
+- **The web UI always runs, and that is not the same as `--human`.** The UI is where Allow/Deny
+  lives; `--human` is whether the agent can *talk* to you. An earlier design required `--human`
+  for `--oauth`, which made a hosted client impossible to add: an authorization needs a click,
+  not a conversation.
 - **PKCE is required from a public client and optional for one with a secret.** The MCP
   specification requires S256 from every client, and the SDK's own `/token` handler enforces
   it (`code_verifier: z.string()`), which a client such as Gemini's connector may never send.
