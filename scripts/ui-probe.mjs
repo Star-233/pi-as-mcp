@@ -208,7 +208,7 @@ try {
   check("info lists the tools",
     Array.isArray(info.tools) && info.tools.length === (process.platform === "win32" ? 8 : 7),
     String(info.tools?.length));
-  check("info lists the deny list", Array.isArray(info.deny) && info.deny.length === 6);
+  check("info lists the deny list (empty by default)", Array.isArray(info.deny) && info.deny.length === 0);
   check("info reports the wait window", info.blockMs === 90000, String(info.blockMs));
   check("info reports tokens as set, never as values",
     info.httpTokenSet === true && info.uiTokenSet === true && !JSON.stringify(info).includes(TOKEN));

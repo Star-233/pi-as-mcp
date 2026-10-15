@@ -66,7 +66,8 @@ const DEFAULT_TOOLS =
     : // The powershell tool throws on first use anywhere but Windows; advertising it
       // there only produces a tool call that always fails.
       ["read", "write", "edit", "ls", "grep", "find", "bash"];
-const DEFAULT_DENY = [".ssh", ".aws", ".gnupg", ".git-credentials", ".netrc", ".config/gcloud"];
+// Empty by default: what is denied is the human's choice (--deny or PI_AS_MCP_DENY).
+const DEFAULT_DENY: string[] = [];
 const DEFAULT_PORT = 8777;
 
 function parseFlags(argv: string[]): Record<string, string | boolean> {

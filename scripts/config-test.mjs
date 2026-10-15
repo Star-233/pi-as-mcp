@@ -25,7 +25,7 @@ const checks = [
   ["tools.length", c.tools.length, expectedTools.length],
   ["tools", c.tools.join(","), expectedTools.join(",")],
   ["approve.length", c.approve.length, 0],
-  ["deny.length", c.deny.length, 6],
+  ["deny.length", c.deny.length, 0],
   ["http", c.http, false],
   // Same reasoning as --human: an authorization server nobody can approve on is
   // not a thing to switch on by accident.
